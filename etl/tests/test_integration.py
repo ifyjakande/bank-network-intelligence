@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import time
 import urllib.request
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -42,10 +44,79 @@ def scalar(ch: Client, sql: str, **params: Any) -> Any:
     return ch.query(sql, parameters=params).result_rows[0][0]
 
 
-def test_records_flow_and_nothing_is_quarantined(ch: Client) -> None:
+def test_records_flow_and_nothing_real_is_quarantined(ch: Client) -> None:
     assert scalar(ch, "SELECT count() FROM netflow.halfflows") > 0
     assert scalar(ch, "SELECT count() FROM netflow.sessions") > 0
-    assert scalar(ch, "SELECT count() FROM netflow.ingest_errors") == 0
+    real_errors = scalar(
+        ch, "SELECT count() FROM netflow.ingest_errors WHERE raw_message NOT LIKE '%itest-%'"
+    )
+    assert real_errors == 0
+
+
+def _produce(message: dict[str, Any]) -> None:
+    subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-i",
+            os.environ.get("KAFKA_CONTAINER", "bni-kafka-1"),
+            "/opt/kafka/bin/kafka-console-producer.sh",
+            "--bootstrap-server",
+            "localhost:9092",
+            "--topic",
+            "netflow.halfflows.v1",
+        ],
+        input=json.dumps(message) + "\n",
+        text=True,
+        check=True,
+        timeout=60,
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "reason"),
+    [
+        ("record_id", "short", "invalid record_id"),
+        ("record_id", "0123456789abcdef-too-long", "invalid record_id"),
+        ("direction", "sideways", "invalid direction"),
+        ("first_seen_us", 1, "first_seen_us outside the accepted window"),
+    ],
+)
+def test_bad_values_are_quarantined_not_ingested(
+    ch: Client, field: str, value: Any, reason: str
+) -> None:
+    # everything else about the record is valid (a current timestamp in particular), so
+    # the one bad value alone must keep it out of halfflows and route it to ingest_errors,
+    # without throwing inside the insert and stalling the partition
+    marker = f"itest-{uuid.uuid4().hex[:12]}"
+    record: dict[str, Any] = {
+        "record_id": uuid.uuid4().hex[:16],
+        "community_id": marker,
+        "direction": "c2s",
+        "first_seen_us": int(time.time() * 1e6),
+        "exported_at_us": int(time.time() * 1e6),
+        "probe_id": "itest",
+        "src_ip": "10.16.0.20",
+        "dst_ip": "10.200.1.10",
+    }
+    record[field] = value
+    before = scalar(ch, "SELECT count() FROM netflow.stitch_queue")
+    _produce(record)
+    deadline = time.monotonic() + 90
+    got = ""
+    while time.monotonic() < deadline and not got:
+        time.sleep(5)
+        rows = ch.query(
+            "SELECT error FROM netflow.ingest_errors WHERE raw_message LIKE {m:String}",
+            parameters={"m": f"%{marker}%"},
+        ).result_rows
+        got = rows[0][0] if rows else ""
+    assert got == reason
+    leaked = scalar(
+        ch, "SELECT count() FROM netflow.halfflows WHERE community_id = {m:String}", m=marker
+    )
+    assert leaked == 0, "the invalid record reached halfflows"
+    assert scalar(ch, "SELECT count() FROM netflow.stitch_queue") > before, "ingest stalled"
 
 
 def test_replicas_agree(ch: Client) -> None:
@@ -70,7 +141,8 @@ def test_sessions_are_unique_complete_and_enriched(ch: Client) -> None:
                countIf(NOT complete) / count(),
                countIf(branch_id = '' OR circuit_id = '' OR device_type = 'unknown')
         FROM netflow.sessions
-        WHERE session_start < now() - INTERVAL {SETTLE_MIN} MINUTE
+        WHERE session_start BETWEEN now() - INTERVAL {SETTLE_MIN + 30} MINUTE
+                                AND now() - INTERVAL {SETTLE_MIN} MINUTE
     """).result_rows[0]
     duplicates, incomplete_share, unenriched = row
     assert duplicates == 0

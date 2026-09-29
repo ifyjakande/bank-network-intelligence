@@ -48,7 +48,9 @@ CREATE DICTIONARY IF NOT EXISTS netflow.branch ON CLUSTER netflow
     region             String,
     size               String,
     router_id          String,
-    payment_switch_id  String
+    payment_switch_id  String,
+    primary_provider   String,
+    primary_circuit_id String
 )
 PRIMARY KEY branch_id
 SOURCE(POSTGRESQL(NAME pg_inventory TABLE 'v_branch'))

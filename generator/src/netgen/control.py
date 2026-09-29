@@ -83,18 +83,21 @@ def serve(
                         server_factor=float(body.get("server_factor", 1)),
                         label=str(body.get("label", "")),
                     )
-                    duration_us = int(float(body.get("duration_s", 300)) * 1e6)
+                    duration_s = float(body.get("duration_s", 300))
+                    if not 1 <= duration_s <= 86_400:
+                        raise ValueError("duration_s must be in [1, 86400]")
+                    duration_us = int(duration_s * 1e6)
                     f = registry.add(spec, now, now + duration_us, source="api")
                     self._send(201, f.as_dict())
                 elif self.path == "/load":
                     factor = float(body["factor"])
-                    if not 0 < factor <= 500:
+                    if not 0 < factor <= 500:  # also false for NaN
                         raise ValueError("factor must be in (0, 500]")
                     demand.load_factor = factor
                     self._send(200, {"factor": factor})
                 else:
                     self._send(404, {"error": "not found"})
-            except (KeyError, ValueError, json.JSONDecodeError) as exc:
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
                 self._send(400, {"error": str(exc)})
 
         def do_DELETE(self) -> None:

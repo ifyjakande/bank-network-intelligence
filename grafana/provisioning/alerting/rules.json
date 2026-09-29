@@ -1,0 +1,552 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "orgId": 1,
+      "folder": "Bank network",
+      "interval": "1m",
+      "name": "service-quality",
+      "rules": [
+        {
+          "uid": "branch-degraded",
+          "title": "Branch network degraded",
+          "condition": "C",
+          "for": "2m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "critical",
+            "team": "network-ops"
+          },
+          "annotations": {
+            "summary": "{{ $labels.branch_id }} network degraded: {{ $values.A }}% of sessions",
+            "description": "{{ $labels.branch_id }} ({{ $labels.region }}, primary provider {{ $labels.provider }}) is reachable but {{ $values.A }}% of its sessions fail the network SLA (WAN RTT, loss or no return path). Open Fault localisation for the likely cause.",
+            "runbook_url": "/d/bank-localise"
+          },
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "clickhouse",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "model": {
+                "refId": "A",
+                "datasource": {
+                  "type": "grafana-clickhouse-datasource",
+                  "uid": "clickhouse"
+                },
+                "editorType": "sql",
+                "rawSql": "SELECT branch_id, region, provider,\n                   if(pct >= greatest(20, 3 * estate_pct), pct, 0) AS net_degraded_pct\n            FROM (\n                SELECT branch_id,\n                       dictGet('netflow.branch', 'region', branch_id) AS region,\n                       dictGet('netflow.branch', 'primary_provider', branch_id) AS provider,\n                       round(100 * sum(net_degraded) / sum(sessions), 1) AS pct,\n                       (SELECT 100 * sum(net_degraded) / sum(sessions)\n                        FROM netflow.quality_1m WHERE minute >= toStartOfMinute(now()) - INTERVAL 3 MINUTE AND minute < toStartOfMinute(now())) AS estate_pct\n                FROM netflow.quality_1m\n                WHERE minute >= toStartOfMinute(now()) - INTERVAL 3 MINUTE AND minute < toStartOfMinute(now())\n                GROUP BY branch_id HAVING sum(sessions) >= 10)",
+                "format": 1,
+                "queryType": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "fault-localised",
+          "title": "Fault localised",
+          "condition": "C",
+          "for": "2m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "critical",
+            "team": "network-ops"
+          },
+          "annotations": {
+            "summary": "Likely cause: {{ $labels.element_type }} {{ $labels.element_id }}",
+            "description": "Degraded sessions converge on {{ $labels.element_type }} {{ $labels.element_id }} (score {{ $values.A }}). See Fault localisation for coverage, precision and the devices and branches affected.",
+            "runbook_url": "/d/bank-localise"
+          },
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "clickhouse",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "model": {
+                "refId": "A",
+                "datasource": {
+                  "type": "grafana-clickhouse-datasource",
+                  "uid": "clickhouse"
+                },
+                "editorType": "sql",
+                "rawSql": "SELECT element_type, element_id, score FROM (-- Fault localisation: which single element best explains the degraded sessions?\n--\n-- For every element on a session path (switch, router, circuit, PoP, provider, gateway,\n-- server, app) over the window:\n--   precision = degraded sessions through it / all sessions through it\n--   coverage  = degraded sessions through it / all degraded sessions\n-- and rank by their harmonic mean. A router and its circuit often carry identical\n-- sessions and tie; both are reported, as the operator would want to see.\n--\n-- params: window_min (UInt16), min_degraded (UInt32)\nWITH\n    per_minute AS (\n        -- one row per element and minute, however the rollup's parts happen to be merged\n        SELECT\n            e.element_type AS element_type,\n            e.element_id AS element_id,\n            e.minute AS minute,\n            sum(e.sessions) AS sessions,\n            sum(e.degraded) AS degraded,\n            uniqMergeState(e.degraded_devices) AS degraded_devices,\n            uniqMergeState(e.degraded_branches) AS degraded_branches,\n            groupUniqArrayMergeState(16)(e.degraded_apps) AS degraded_apps\n        FROM netflow.element_1m AS e\n        WHERE e.minute >= toStartOfMinute(now() - toIntervalMinute(5))\n          AND e.minute < toStartOfMinute(now())\n        GROUP BY element_type, element_id, minute\n    ),\n    per_element AS (\n        SELECT\n            element_type,\n            element_id,\n            sum(p.sessions) AS sessions,\n            sum(p.degraded) AS degraded,\n            uniqMerge(p.degraded_devices) AS devices_hit,\n            uniqMerge(p.degraded_branches) AS branches_hit,\n            groupUniqArrayMerge(16)(p.degraded_apps) AS apps_hit,\n            -- the first minute it was meaningfully degraded, not the first stray session\n            minIf(p.minute, p.degraded >= greatest(2, 0.2 * p.sessions)) AS first_degraded_minute\n        FROM per_minute AS p\n        GROUP BY element_type, element_id\n    ),\n    total AS (\n        SELECT sum(degraded) AS all_degraded\n        FROM per_element\n        WHERE element_type = 'app'  -- every session has exactly one app: no double count\n    )\nSELECT\n    element_type,\n    element_id,\n    degraded,\n    sessions,\n    round(degraded / sessions, 3) AS precision,\n    round(degraded / (SELECT all_degraded FROM total), 3) AS coverage,\n    round(2 * precision * coverage / (precision + coverage), 3) AS score,\n    devices_hit,\n    branches_hit,\n    apps_hit,\n    first_degraded_minute AS since\nFROM per_element\nWHERE degraded >= 20\nORDER BY score DESC, precision DESC\nLIMIT 3)\n            WHERE score >= 0.5",
+                "format": 1,
+                "queryType": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "card-auth-slow",
+          "title": "Card authorisation slow",
+          "condition": "C",
+          "for": "3m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "critical",
+            "team": "network-ops"
+          },
+          "annotations": {
+            "summary": "Card authorisation p95 at {{ $values.A }} ms",
+            "description": "Estate-wide p95 time to first response for card authorisation is above the 900 ms SLA ceiling.",
+            "runbook_url": "/d/bank-estate"
+          },
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "clickhouse",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "model": {
+                "refId": "A",
+                "datasource": {
+                  "type": "grafana-clickhouse-datasource",
+                  "uid": "clickhouse"
+                },
+                "editorType": "sql",
+                "rawSql": "SELECT quantilesTDigestMerge(0.5, 0.95)(response_ms)[2] AS p95_ms\n            FROM netflow.quality_1m\n            WHERE minute >= toStartOfMinute(now()) - INTERVAL 3 MINUTE AND minute < toStartOfMinute(now()) AND app = 'card_authorisation'",
+                "format": 1,
+                "queryType": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        900
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "branch-on-backup",
+          "title": "Branch running on backup circuit",
+          "condition": "C",
+          "for": "1m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "network-ops"
+          },
+          "annotations": {
+            "summary": "{{ $labels.branch_id }} failed over to its backup circuit",
+            "description": "Traffic from {{ $labels.branch_id }} ({{ $labels.region }}) is on its backup link: the primary is down. Backup links are smaller, expect congestion.",
+            "runbook_url": "/d/bank-estate"
+          },
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "clickhouse",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "model": {
+                "refId": "A",
+                "datasource": {
+                  "type": "grafana-clickhouse-datasource",
+                  "uid": "clickhouse"
+                },
+                "editorType": "sql",
+                "rawSql": "SELECT branch_id,\n                   dictGet('netflow.branch', 'region', branch_id) AS region,\n                   sum(sessions) AS sessions\n            FROM netflow.quality_1m\n            WHERE minute >= toStartOfMinute(now()) - INTERVAL 2 MINUTE\n              AND minute < toStartOfMinute(now()) AND circuit_role = 'backup'\n            GROUP BY branch_id",
+                "format": 1,
+                "queryType": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "orgId": 1,
+      "folder": "Bank network",
+      "interval": "1m",
+      "name": "data-platform",
+      "rules": [
+        {
+          "uid": "stitch-lag",
+          "title": "Stitcher falling behind",
+          "condition": "C",
+          "for": "3m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "network-ops"
+          },
+          "annotations": {
+            "summary": "Stitch lag {{ $values.A }} s",
+            "description": "Sessions are reaching the store late, or a shard has not been stitched at all; check the stitcher logs.",
+            "runbook_url": "/d/bank-pipeline"
+          },
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "clickhouse",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "model": {
+                "refId": "A",
+                "datasource": {
+                  "type": "grafana-clickhouse-datasource",
+                  "uid": "clickhouse"
+                },
+                "editorType": "sql",
+                "rawSql": "SELECT if(count() < 2, 86400, dateDiff('second', min(w), now())) AS lag_s FROM (\n                SELECT argMax(watermark, updated_at) AS w FROM ops.etl_watermarks\n                WHERE job = 'stitch' GROUP BY shard)",
+                "format": 1,
+                "queryType": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        120
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "replica-down",
+          "title": "ClickHouse replica down",
+          "condition": "C",
+          "for": "1m",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "critical",
+            "team": "network-ops"
+          },
+          "annotations": {
+            "summary": "Only {{ $values.A }} of 4 ClickHouse servers answer",
+            "description": "A shard is running on one replica: no redundancy until it is back.",
+            "runbook_url": "/d/bank-pipeline"
+          },
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "clickhouse",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "model": {
+                "refId": "A",
+                "datasource": {
+                  "type": "grafana-clickhouse-datasource",
+                  "uid": "clickhouse"
+                },
+                "editorType": "sql",
+                "rawSql": "SELECT servers FROM ops.servers_up",
+                "format": 1,
+                "queryType": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "lt",
+                      "params": [
+                        4
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "replica-delay",
+          "title": "ClickHouse replication delay",
+          "condition": "C",
+          "for": "2m",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "network-ops"
+          },
+          "annotations": {
+            "summary": "Replica {{ $values.A }} s behind",
+            "description": "A replica is lagging; reads from it are stale.",
+            "runbook_url": "/d/bank-pipeline"
+          },
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "clickhouse",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "model": {
+                "refId": "A",
+                "datasource": {
+                  "type": "grafana-clickhouse-datasource",
+                  "uid": "clickhouse"
+                },
+                "editorType": "sql",
+                "rawSql": "SELECT max(absolute_delay) AS delay_s FROM ops.replica_status",
+                "format": 1,
+                "queryType": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        60
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "ingest-errors",
+          "title": "Records quarantined at ingest",
+          "condition": "C",
+          "for": "0s",
+          "noDataState": "OK",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "warning",
+            "team": "network-ops"
+          },
+          "annotations": {
+            "summary": "{{ $values.A }} records quarantined in 10 min",
+            "description": "Messages on the topic failed to parse or carried invalid values; see netflow.ingest_errors for the payload and reason.",
+            "runbook_url": "/d/bank-pipeline"
+          },
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "clickhouse",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "model": {
+                "refId": "A",
+                "datasource": {
+                  "type": "grafana-clickhouse-datasource",
+                  "uid": "clickhouse"
+                },
+                "editorType": "sql",
+                "rawSql": "SELECT count() AS errors FROM netflow.ingest_errors\n            WHERE received_at >= now() - INTERVAL 10 MINUTE",
+                "format": 1,
+                "queryType": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "uid": "ingest-stopped",
+          "title": "Ingestion stopped",
+          "condition": "C",
+          "for": "2m",
+          "noDataState": "Alerting",
+          "execErrState": "Error",
+          "labels": {
+            "severity": "critical",
+            "team": "network-ops"
+          },
+          "annotations": {
+            "summary": "No records ingested for 2 minutes",
+            "description": "Kafka consumers or the producer are down.",
+            "runbook_url": "/d/bank-pipeline"
+          },
+          "data": [
+            {
+              "refId": "A",
+              "datasourceUid": "clickhouse",
+              "relativeTimeRange": {
+                "from": 300,
+                "to": 0
+              },
+              "model": {
+                "refId": "A",
+                "datasource": {
+                  "type": "grafana-clickhouse-datasource",
+                  "uid": "clickhouse"
+                },
+                "editorType": "sql",
+                "rawSql": "SELECT count() AS records FROM netflow.stitch_queue\n            WHERE ingested_at >= now() - INTERVAL 2 MINUTE",
+                "format": 1,
+                "queryType": "table",
+                "intervalMs": 60000,
+                "maxDataPoints": 43200
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "A",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "lt",
+                      "params": [
+                        1
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

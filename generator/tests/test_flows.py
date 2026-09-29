@@ -108,7 +108,7 @@ def test_slow_server_raises_response_time_not_rtt(
         resp, rtt = [], []
         for _ in range(300):
             s = factory.create(_atm(estate), "card_authorisation", T0)
-            if "cas-02" not in s.server_ip and s.server_ip != estate.servers["cas-02"].ip:
+            if s.server_ip != estate.servers["cas-02"].ip:
                 continue
             assert s.first_resp_us and s.first_req_us and s.ack_us and s.synack_us
             resp.append(s.first_resp_us - s.first_req_us)

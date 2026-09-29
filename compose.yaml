@@ -130,6 +130,9 @@ services:
   ch-s1r1:
     <<: *clickhouse
     hostname: ch-s1r1
+    networks:
+      default:
+        aliases: [ch-query]
     environment: { <<: *clickhouse-env, CH_SHARD: "01", CH_REPLICA: ch-s1r1 }
     volumes:
       - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
@@ -140,6 +143,9 @@ services:
   ch-s1r2:
     <<: *clickhouse
     hostname: ch-s1r2
+    networks:
+      default:
+        aliases: [ch-query]
     environment: { <<: *clickhouse-env, CH_SHARD: "01", CH_REPLICA: ch-s1r2 }
     volumes:
       - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
@@ -148,6 +154,9 @@ services:
   ch-s2r1:
     <<: *clickhouse
     hostname: ch-s2r1
+    networks:
+      default:
+        aliases: [ch-query]
     environment: { <<: *clickhouse-env, CH_SHARD: "02", CH_REPLICA: ch-s2r1 }
     volumes:
       - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
@@ -156,6 +165,9 @@ services:
   ch-s2r2:
     <<: *clickhouse
     hostname: ch-s2r2
+    networks:
+      default:
+        aliases: [ch-query]
     environment: { <<: *clickhouse-env, CH_SHARD: "02", CH_REPLICA: ch-s2r2 }
     volumes:
       - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
@@ -219,6 +231,7 @@ services:
       NETGEN_KAFKA_BOOTSTRAP: kafka:9092
       NETGEN_LOAD_FACTOR: ${NETGEN_LOAD_FACTOR:-5}
       NETGEN_LATE_MAX_S: ${NETGEN_LATE_MAX_S:-300}
+      NETGEN_FAULT_SCHEDULE: ${NETGEN_FAULT_SCHEDULE:-demo}
     ports:
       - "127.0.0.1:8088:8088"
     depends_on:
@@ -232,13 +245,54 @@ services:
     <<: *etl
     restart: unless-stopped
     command: ["stitch"]
+    healthcheck:
+      # healthy = a full stitch loop succeeded in the last 2 minutes, not just "running"
+      test: ["CMD", "python", "-c", "import os, sys, time; p = '/tmp/flowetl-stitch-heartbeat'; sys.exit(0 if os.path.exists(p) and time.time() - os.path.getmtime(p) < 120 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
     depends_on:
       migrate: { condition: service_completed_successfully }
     deploy:
       resources:
         limits: { memory: 256m }
 
+  grafana:
+    image: grafana/grafana:13.2.3
+    restart: unless-stopped
+    environment:
+      GF_PLUGINS_PREINSTALL_SYNC: grafana-clickhouse-datasource@4.21.3
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?}
+      GF_SECURITY_DISABLE_GRAVATAR: "true"
+      # viewers need no login: the dashboards are read-only by provisioning
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: dark
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/estate.json
+      CH_GRAFANA_PASSWORD: ${CH_GRAFANA_PASSWORD:?}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health | grep -q ok"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits: { memory: 768m }
+
 volumes:
+  grafana-data:
   kafka-data:
   keeper1-data:
   keeper2-data:
