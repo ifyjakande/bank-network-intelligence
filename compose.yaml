@@ -300,6 +300,9 @@ services:
       # the public URL when served through the tunnel; links and redirects use it
       GF_SERVER_ROOT_URL: ${GRAFANA_ROOT_URL:-http://localhost:3000/}
       CH_GRAFANA_PASSWORD: ${CH_GRAFANA_PASSWORD:?}
+      # GC hard before the container limit: at 768m it was OOM-killed with a few
+      # dashboards open at once, and slowed to 10 s per query on the way there
+      GOMEMLIMIT: 1100MiB
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -315,7 +318,7 @@ services:
       migrate: { condition: service_completed_successfully }
     deploy:
       resources:
-        limits: { memory: 768m }
+        limits: { memory: 1536m }
 
 volumes:
   ch-bench-data:

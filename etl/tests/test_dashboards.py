@@ -48,7 +48,12 @@ def _api(path: str, body: dict[str, Any] | None = None) -> Any:
     req = urllib.request.Request(
         f"{GRAFANA}{path}",
         data=json.dumps(body).encode() if body is not None else None,
-        headers={"Content-Type": "application/json", "Authorization": _auth()},
+        # a named agent: Cloudflare's browser check rejects urllib's default one on the live demo
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": _auth(),
+            "User-Agent": "bni-dashboard-tests",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=60) as r:
