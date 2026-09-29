@@ -1,0 +1,50 @@
+#!/bin/bash
+# First boot of the demo instance: Docker, the stack, and the Cloudflare Tunnel.
+# Rendered by Terraform; everything it installs is pinned and verified.
+set -euo pipefail
+exec > >(tee -a /var/log/bni-bootstrap.log) 2>&1
+
+REGION="${region}"
+REPO="${git_repository}"
+REF="${git_ref}"
+APP=/opt/bni
+PLUGINS=/usr/local/lib/docker/cli-plugins
+
+dnf install -y docker git make openssl tar
+systemctl enable --now docker
+
+# compose and buildx plugins, pinned and checked against their published checksums
+mkdir -p "$PLUGINS" /tmp/plugins && cd /tmp/plugins
+curl -fsSLO "https://github.com/docker/compose/releases/download/v${compose_version}/docker-compose-linux-aarch64"
+curl -fsSLO "https://github.com/docker/compose/releases/download/v${compose_version}/docker-compose-linux-aarch64.sha256"
+sha256sum -c docker-compose-linux-aarch64.sha256
+install -m 0755 docker-compose-linux-aarch64 "$PLUGINS/docker-compose"
+curl -fsSLO "https://github.com/docker/buildx/releases/download/v${buildx_version}/buildx-v${buildx_version}.linux-arm64"
+curl -fsSL "https://github.com/docker/buildx/releases/download/v${buildx_version}/checksums.txt" \
+    | grep " \*\?buildx-v${buildx_version}.linux-arm64$" | sha256sum -c -
+install -m 0755 "buildx-v${buildx_version}.linux-arm64" "$PLUGINS/docker-buildx"
+docker compose version && docker buildx version
+
+# cloudflared from Cloudflare's signed package repository
+curl -fsSL https://pkg.cloudflare.com/cloudflared-ascii.repo -o /etc/yum.repos.d/cloudflared.repo
+dnf install -y "cloudflared-${cloudflared_version}"
+
+# the stack, at the pinned commit
+git clone "$REPO" "$APP"
+cd "$APP"
+git checkout "$REF"
+./scripts/gen-secrets.sh
+chmod 600 .env.stack
+echo "GRAFANA_ROOT_URL=${grafana_root_url}" >> .env.stack
+make up
+
+# publish Grafana through the tunnel; the token never touches user data or the logs
+set +x
+TOKEN="$(aws ssm get-parameter --region "$REGION" --name "${token_parameter}" \
+    --with-decryption --query Parameter.Value --output text)"
+cloudflared service install "$TOKEN"
+unset TOKEN
+systemctl enable --now cloudflared
+
+touch "$APP/.bootstrap-done"
+echo "bootstrap finished"
