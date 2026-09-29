@@ -29,6 +29,26 @@ docker compose version && docker buildx version
 curl -fsSL https://pkg.cloudflare.com/cloudflared-ascii.repo -o /etc/yum.repos.d/cloudflared.repo
 dnf install -y "cloudflared-${cloudflared_version}"
 
+# read-only deploy key from SSM; git goes over ssh.github.com:443 because the security
+# group only allows 443 out. Host keys come from GitHub's API over TLS, not first use.
+install -d -m 700 /root/.ssh
+aws ssm get-parameter --region "$REGION" --name "${deploy_key_param}" \
+    --with-decryption --query Parameter.Value --output text > /root/.ssh/bni_deploy
+chmod 600 /root/.ssh/bni_deploy
+curl -fsSL https://api.github.com/meta \
+    | python3 -c 'import json,sys; [print("[ssh.github.com]:443", k) for k in json.load(sys.stdin)["ssh_keys"]]' \
+    > /root/.ssh/known_hosts
+cat > /root/.ssh/config <<'SSH'
+Host github.com
+    HostName ssh.github.com
+    Port 443
+    User git
+    IdentityFile /root/.ssh/bni_deploy
+    IdentitiesOnly yes
+    StrictHostKeyChecking yes
+SSH
+chmod 600 /root/.ssh/config
+
 # the stack, at the pinned commit
 git clone "$REPO" "$APP"
 cd "$APP"

@@ -8,7 +8,8 @@
 
 Reads the TFC token from ~/.terraform.d/credentials.tfrc.json and everything else from
 the environment (`set -a; . ./.env; set +a`): AWS keys for bootstrap-keys;
-CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN and BUDGET_EMAIL for live-vars.
+CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN, GITHUB_TOKEN and BUDGET_EMAIL for live-vars.
+GITHUB_TOKEN needs admin on the repo, to add and remove the instance's deploy key.
 Idempotent; never prints a secret value.
 """
 
@@ -156,12 +157,11 @@ def live_vars(role_arn: str) -> None:
         sensitive=False,
     )
     upsert_var(ws, "budget_email", os.environ["BUDGET_EMAIL"], "terraform", sensitive=False)
-    if os.environ.get("CLOUDFLARE_API_TOKEN"):
-        upsert_var(
-            ws, "CLOUDFLARE_API_TOKEN", os.environ["CLOUDFLARE_API_TOKEN"], "env", sensitive=True
-        )
-    else:
-        print("  CLOUDFLARE_API_TOKEN not in the environment: add it as a sensitive env var")
+    for key in ("CLOUDFLARE_API_TOKEN", "GITHUB_TOKEN"):
+        if os.environ.get(key):
+            upsert_var(ws, key, os.environ[key], "env", sensitive=True)
+        else:
+            print(f"  {key} not in the environment: add it as a sensitive env var")
 
 
 if __name__ == "__main__":
