@@ -1,9 +1,12 @@
 name: ci
 
+# docs-only changes (README, screenshots, clips) skip CI, and so skip the redeploy too
 on:
   pull_request:
+    paths-ignore: ["**.md", "docs/**"]
   push:
     branches: [main]
+    paths-ignore: ["**.md", "docs/**"]
   workflow_dispatch:
 
 permissions:
