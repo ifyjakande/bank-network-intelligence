@@ -9,9 +9,14 @@ variable "instance_type" {
   default     = "t4g.xlarge"
 }
 
-variable "git_repository" {
+variable "github_owner" {
   type    = string
-  default = "https://github.com/ifyjakande/bank-network-intelligence.git"
+  default = "ifyjakande"
+}
+
+variable "github_repository" {
+  type    = string
+  default = "bank-network-intelligence"
 }
 
 variable "git_ref" {

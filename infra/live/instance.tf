@@ -9,7 +9,7 @@ module "instance_role" {
 
   name                    = "bni-demo-instance"
   use_name_prefix         = false
-  description             = "Demo instance: SSM access and its own tunnel token"
+  description             = "Demo instance: SSM access, its tunnel token and deploy key"
   create_instance_profile = true
 
   trust_policy_permissions = {
@@ -28,9 +28,9 @@ module "instance_role" {
 
   create_inline_policy = true
   inline_policy_permissions = {
-    ReadTunnelToken = {
+    ReadOwnSecrets = {
       actions   = ["ssm:GetParameter"]
-      resources = [module.tunnel_token.ssm_parameter_arn]
+      resources = [module.tunnel_token.ssm_parameter_arn, module.deploy_key.ssm_parameter_arn]
     }
   }
 }
@@ -64,12 +64,16 @@ module "instance" {
     delete_on_termination = true
   }
 
+  # the deploy key must be on the repo before the instance first clones it
+  depends_on = [github_repository_deploy_key.instance]
+
   user_data_replace_on_change = true
   user_data = templatefile("${path.module}/bootstrap.sh.tftpl", {
     region              = var.region
-    git_repository      = var.git_repository
+    git_repository      = "git@github.com:${var.github_owner}/${var.github_repository}.git"
     git_ref             = var.git_ref
     token_parameter     = module.tunnel_token.ssm_parameter_name
+    deploy_key_param    = module.deploy_key.ssm_parameter_name
     grafana_root_url    = "https://${local.grafana_hostname}/"
     compose_version     = "5.5.1"
     buildx_version      = "0.37.1"
