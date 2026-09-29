@@ -19,6 +19,10 @@ module "vpc" {
   default_security_group_egress  = []
 }
 
+# Outbound is limited to HTTPS (packages, images, git, SSM) and the tunnel's port 7844.
+# The destinations are public CDNs with no fixed ranges, so the CIDR has to stay open;
+# DNS, NTP and instance metadata go to link-local addresses that security groups don't filter.
+#trivy:ignore:AWS-0104
 module "instance_sg" {
   source  = "terraform-aws-modules/security-group/aws"
   version = "6.0.0"
@@ -30,10 +34,26 @@ module "instance_sg" {
 
   ingress_rules = {}
   egress_rules = {
-    all_ipv4 = {
-      description = "Outbound: packages, images, Cloudflare Tunnel, SSM"
+    https = {
+      description = "Packages, container images, git, SSM"
       cidr_ipv4   = "0.0.0.0/0"
-      ip_protocol = "-1"
+      ip_protocol = "tcp"
+      from_port   = 443
+      to_port     = 443
+    }
+    tunnel_quic = {
+      description = "Cloudflare Tunnel (QUIC)"
+      cidr_ipv4   = "0.0.0.0/0"
+      ip_protocol = "udp"
+      from_port   = 7844
+      to_port     = 7844
+    }
+    tunnel_http2 = {
+      description = "Cloudflare Tunnel (HTTP/2 fallback)"
+      cidr_ipv4   = "0.0.0.0/0"
+      ip_protocol = "tcp"
+      from_port   = 7844
+      to_port     = 7844
     }
   }
 }
