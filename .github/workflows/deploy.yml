@@ -1,0 +1,61 @@
+name: deploy
+
+# after CI passes on main: move the demo instance to the new commit over SSM
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # GitHub OIDC -> the bni-github-deploy role; no stored AWS keys
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+
+jobs:
+  deploy:
+    if: >
+      vars.AWS_DEPLOY_ROLE_ARN != '' &&
+      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: find the demo instance
+        id: find
+        run: |
+          id=$(aws ec2 describe-instances \
+            --filters Name=tag:Project,Values=bni Name=tag:Name,Values=bni-demo \
+                      Name=instance-state-name,Values=running \
+            --query 'Reservations[0].Instances[0].InstanceId' --output text)
+          if [ "$id" = "None" ] || [ -z "$id" ]; then
+            echo "::notice::no demo instance running, nothing to deploy"
+          fi
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+      - name: deploy over SSM
+        if: steps.find.outputs.id != 'None' && steps.find.outputs.id != ''
+        env:
+          INSTANCE: ${{ steps.find.outputs.id }}
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          cmd=$(aws ssm send-command --instance-ids "$INSTANCE" \
+            --document-name AWS-RunShellScript --timeout-seconds 1800 \
+            --comment "deploy $SHA" \
+            --parameters "commands=[\"/opt/bni/scripts/deploy.sh $SHA\"]" \
+            --query Command.CommandId --output text)
+          echo "command $cmd"
+          aws ssm wait command-executed --command-id "$cmd" --instance-id "$INSTANCE" || true
+          aws ssm get-command-invocation --command-id "$cmd" --instance-id "$INSTANCE" \
+            --query '{status: Status, out: StandardOutputContent, err: StandardErrorContent}'
+          status=$(aws ssm get-command-invocation --command-id "$cmd" --instance-id "$INSTANCE" \
+            --query Status --output text)
+          test "$status" = "Success"

@@ -7,9 +7,23 @@
             <insert_quorum>0</insert_quorum>
         </default>
         <readonly>
-            <readonly>1</readonly>
+            <!-- 2: no writes, but clients (the grafana plugin) may still set query settings,
+                 within the bounds below -->
+            <readonly>2</readonly>
             <max_memory_usage>800000000</max_memory_usage>
             <max_execution_time>30</max_execution_time>
+            <max_result_rows>1000000</max_result_rows>
+            <!-- a burst of heavy dashboard queries must not starve ingestion -->
+            <max_memory_usage_for_user>1200000000</max_memory_usage_for_user>
+            <max_concurrent_queries_for_user>20</max_concurrent_queries_for_user>
+            <constraints>
+                <max_memory_usage><max>800000000</max></max_memory_usage>
+                <max_execution_time><max>30</max></max_execution_time>
+                <max_result_rows><max>1000000</max></max_result_rows>
+                <readonly><min>2</min></readonly>
+                <max_memory_usage_for_user><max>1200000000</max></max_memory_usage_for_user>
+                <max_concurrent_queries_for_user><max>20</max></max_concurrent_queries_for_user>
+            </constraints>
         </readonly>
     </profiles>
 
@@ -36,7 +50,7 @@
                 <query>GRANT dictGet ON netflow.*</query>
                 <query>GRANT SELECT, INSERT ON ops.*</query>
                 <query>GRANT SYSTEM SYNC REPLICA ON netflow.*</query>
-                <query>GRANT SELECT ON system.*</query>
+                <query>GRANT SELECT ON system.replicas</query>
             </grants>
         </etl>
 
@@ -46,9 +60,15 @@
             <quota>default</quota>
             <networks><ip>::/0</ip></networks>
             <grants>
+                <!-- data plus the admin-owned health views. Those views fan out with
+                     cluster()/clusterAllReplicas(), whose remote legs run as this user, so it
+                     reads replica and part metadata too. No REMOTE, no query_log, no other
+                     system tables. -->
                 <query>GRANT SELECT ON netflow.*</query>
+                <query>GRANT SELECT ON ops.*</query>
                 <query>GRANT dictGet ON netflow.*</query>
-                <query>GRANT SELECT ON system.*</query>
+                <query>GRANT SELECT ON system.replicas</query>
+                <query>GRANT SELECT ON system.parts</query>
             </grants>
         </grafana>
     </users>

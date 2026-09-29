@@ -51,15 +51,22 @@ CREATE TABLE IF NOT EXISTS netflow.stitch_queue_local ON CLUSTER netflow
     community_id  String
 )
 ENGINE = ReplicatedMergeTree
+PARTITION BY toYYYYMMDD(ingested_at)
 ORDER BY (ingested_at, community_id)
-TTL toDateTime(ingested_at) + INTERVAL 1 DAY DELETE;
+TTL toDateTime(ingested_at) + INTERVAL 2 DAY DELETE
+SETTINGS ttl_only_drop_parts = 1;
+
+-- read-only view across shards, for ingest-rate monitoring (sorted by arrival time)
+CREATE TABLE IF NOT EXISTS netflow.stitch_queue ON CLUSTER netflow AS netflow.stitch_queue_local
+ENGINE = Distributed(netflow, netflow, stitch_queue_local);
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS netflow.stitch_queue_mv ON CLUSTER netflow
 TO netflow.stitch_queue_local
 AS SELECT ingested_at, community_id
 FROM netflow.halfflows_local;
 
--- Records that failed to parse: kept with the raw payload instead of stalling the topic.
+-- Records that failed to parse or carry impossible values: kept with the payload and the
+-- reason instead of stalling the topic (a throwing insert would retry the block forever).
 CREATE TABLE IF NOT EXISTS netflow.ingest_errors ON CLUSTER netflow
 (
     received_at  DateTime DEFAULT now(),
@@ -108,13 +115,19 @@ CREATE TABLE IF NOT EXISTS netflow.halfflows_kafka ON CLUSTER netflow
 ENGINE = Kafka(kafka_flows)
 SETTINGS input_format_skip_unknown_fields = 1;
 
+-- ClickHouse evaluates these expressions for the whole block before WHERE drops rows,
+-- so every conversion is written so it cannot throw on bad input (a throw would fail the
+-- block and the consumer would retry it forever). Rows WHERE rejects never reach the
+-- table; halfflows_errors_mv below keeps them with the reason.
+-- The guards read k.<column>: an unqualified name would resolve to the output alias of
+-- the same name, i.e. the already-sanitised value, and never reject anything.
 CREATE MATERIALIZED VIEW IF NOT EXISTS netflow.halfflows_kafka_mv ON CLUSTER netflow
 TO netflow.halfflows
 AS SELECT
-    toFixedString(record_id, 16) AS record_id,
+    toFixedString(substring(record_id, 1, 16), 16) AS record_id,
     community_id,
     fromUnixTimestamp64Micro(first_seen_us, 'UTC') AS first_seen,
-    CAST(direction, 'Enum8(\'c2s\' = 1, \'s2c\' = 2)') AS direction,
+    CAST(if(direction = 's2c', 's2c', 'c2s'), 'Enum8(\'c2s\' = 1, \'s2c\' = 2)') AS direction,
     record_seq,
     is_final = 1 AS is_final,
     probe_id,
@@ -128,13 +141,32 @@ AS SELECT
     fromUnixTimestamp64Micro(tcp_ack_us, 'UTC') AS tcp_ack,
     fromUnixTimestamp64Micro(first_req_us, 'UTC') AS first_req,
     fromUnixTimestamp64Micro(first_resp_us, 'UTC') AS first_resp
-FROM netflow.halfflows_kafka
-WHERE length(_error) = 0;
+FROM netflow.halfflows_kafka AS k
+WHERE length(k._error) = 0
+  AND length(k.record_id) = 16
+  AND k.direction IN ('c2s', 's2c')
+  AND k.community_id != ''
+  AND k.first_seen_us BETWEEN (toUnixTimestamp(now()) - 7 * 86400) * 1000000
+                          AND (toUnixTimestamp(now()) + 3600) * 1000000;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS netflow.halfflows_errors_mv ON CLUSTER netflow
 TO netflow.ingest_errors
 AS SELECT
-    now() AS received_at, _topic AS topic, _offset AS kafka_offset, _partition AS partition,
-    _error AS error, _raw_message AS raw_message
-FROM netflow.halfflows_kafka
-WHERE length(_error) > 0;
+    now() AS received_at, k._topic AS topic, k._offset AS kafka_offset,
+    k._partition AS partition,
+    if(length(k._error) > 0, k._error,
+       multiIf(length(k.record_id) != 16, 'invalid record_id',
+               k.direction NOT IN ('c2s', 's2c'), 'invalid direction',
+               k.community_id = '', 'missing community_id',
+               'first_seen_us outside the accepted window')) AS error,
+    if(length(k._error) > 0, k._raw_message,
+       toJSONString(map('record_id', k.record_id, 'community_id', k.community_id,
+                        'direction', k.direction,
+                        'first_seen_us', toString(k.first_seen_us)))) AS raw_message
+FROM netflow.halfflows_kafka AS k
+WHERE length(k._error) > 0
+   OR length(k.record_id) != 16
+   OR k.direction NOT IN ('c2s', 's2c')
+   OR k.community_id = ''
+   OR k.first_seen_us NOT BETWEEN (toUnixTimestamp(now()) - 7 * 86400) * 1000000
+                              AND (toUnixTimestamp(now()) + 3600) * 1000000;

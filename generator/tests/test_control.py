@@ -55,6 +55,7 @@ def test_fault_lifecycle(api: tuple[str, FaultRegistry, Demand]) -> None:
     )
     assert code == 201 and f["source"] == "api"
     code, listed = _call("GET", f"{url}/faults")
+    assert code == 200
     assert [x["fault_id"] for x in listed] == [f["fault_id"]]
     code, _ = _call("DELETE", f"{url}/faults/{f['fault_id']}")
     assert code == 200
@@ -66,6 +67,12 @@ def test_bad_requests_get_400(api: tuple[str, FaultRegistry, Demand]) -> None:
     assert _call("POST", f"{url}/faults", {"kind": "degrade", "target": "pop:NOPE"})[0] == 400
     assert _call("POST", f"{url}/faults", {"target": "pop:MER-NTH"})[0] == 400
     assert _call("POST", f"{url}/load", {"factor": 0})[0] == 400
+    assert (
+        _call(
+            "POST", f"{url}/faults", {"kind": "degrade", "target": "pop:MER-NTH", "duration_s": -5}
+        )[0]
+        == 400
+    )
 
 
 def test_load_factor_can_be_changed(api: tuple[str, FaultRegistry, Demand]) -> None:

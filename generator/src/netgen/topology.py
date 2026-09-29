@@ -127,9 +127,6 @@ class Estate:
     def gateways_in(self, dc: str) -> list[Gateway]:
         return [g for g in self.gateways.values() if g.dc == dc]
 
-    def guest_devices(self) -> list[Device]:
-        return self.devices_by_type["guest"]
-
 
 def _lan_octets(index: int) -> tuple[int, int]:
     return 16 + index // 256, index % 256

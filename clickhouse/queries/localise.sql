@@ -9,18 +9,34 @@
 --
 -- params: window_min (UInt16), min_degraded (UInt32)
 WITH
+    per_minute AS (
+        -- one row per element and minute, however the rollup's parts happen to be merged
+        SELECT
+            e.element_type AS element_type,
+            e.element_id AS element_id,
+            e.minute AS minute,
+            sum(e.sessions) AS sessions,
+            sum(e.degraded) AS degraded,
+            uniqMergeState(e.degraded_devices) AS degraded_devices,
+            uniqMergeState(e.degraded_branches) AS degraded_branches,
+            groupUniqArrayMergeState(16)(e.degraded_apps) AS degraded_apps
+        FROM netflow.element_1m AS e
+        WHERE e.minute >= toStartOfMinute(now() - toIntervalMinute({window_min:UInt16}))
+          AND e.minute < toStartOfMinute(now())
+        GROUP BY element_type, element_id, minute
+    ),
     per_element AS (
         SELECT
             element_type,
             element_id,
-            sum(sessions) AS sessions,
-            sum(degraded) AS degraded,
-            uniqMerge(degraded_devices) AS devices_hit,
-            uniqMerge(degraded_branches) AS branches_hit,
-            groupUniqArrayMerge(16)(degraded_apps) AS apps_hit,
-            minIf(e.minute, e.degraded > 0) AS first_degraded_minute
-        FROM netflow.element_1m AS e
-        WHERE minute >= toStartOfMinute(now() - toIntervalMinute({window_min:UInt16}))
+            sum(p.sessions) AS sessions,
+            sum(p.degraded) AS degraded,
+            uniqMerge(p.degraded_devices) AS devices_hit,
+            uniqMerge(p.degraded_branches) AS branches_hit,
+            groupUniqArrayMerge(16)(p.degraded_apps) AS apps_hit,
+            -- the first minute it was meaningfully degraded, not the first stray session
+            minIf(p.minute, p.degraded >= greatest(2, 0.2 * p.sessions)) AS first_degraded_minute
+        FROM per_minute AS p
         GROUP BY element_type, element_id
     ),
     total AS (

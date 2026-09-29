@@ -1,0 +1,635 @@
+{
+  "uid": "bank-sla",
+  "title": "Provider SLA evidence",
+  "description": "Per-provider and per-circuit evidence for SLA conversations",
+  "tags": [
+    "bank-network"
+  ],
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 41,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "refresh": "1m",
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "provider",
+        "label": "Provider",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "clickhouse"
+        },
+        "query": "SELECT DISTINCT primary_provider FROM netflow.branch ORDER BY primary_provider",
+        "definition": "SELECT DISTINCT primary_provider FROM netflow.branch ORDER BY primary_provider",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "name": "Injected incidents (ground truth)",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "clickhouse"
+        },
+        "enable": true,
+        "iconColor": "#9085e9",
+        "target": {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT started_at AS time, if(ongoing, now64(6), ended_at) AS timeEnd,\n               label AS text, kind AS tags\n        FROM netflow.incidents\n        WHERE started_at <= $__toTime AND (ongoing OR ended_at >= $__fromTime)",
+          "format": 1,
+          "queryType": "table"
+        }
+      }
+    ]
+  },
+  "links": [
+    {
+      "type": "dashboards",
+      "tags": [
+        "bank-network"
+      ],
+      "asDropdown": false,
+      "includeVars": true,
+      "keepTime": true,
+      "title": "Dashboards"
+    }
+  ],
+  "panels": [
+    {
+      "type": "text",
+      "title": "",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Provider SLA evidence\nIndependent, timestamped evidence per rented circuit, charged to the branch's **primary** circuit and its provider. A *degraded minute*: at least 20% of the primary's sessions (and at least two) failed the network targets (WAN RTT, loss, no return path); a slow bank server is not counted. An *outage minute*: the branch ran on its backup link. Minutes where the loss sits on one of the branch's own switches while another is healthy are excluded as bank-side; with a single active switch (overnight) that cannot be told apart, so check **Fault localisation** before raising a dispute."
+      },
+      "transparent": true,
+      "id": 1
+    },
+    {
+      "type": "table",
+      "title": "Provider scorecard",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 14,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT provider AS Provider, uniqExact(circuit_id) AS Circuits,\n                   sum(sessions) AS Sessions,\n                   round(100 * sum(net_degraded) / greatest(1, sum(sessions)), 2)\n                       AS `Network-degraded %`,\n                   countIf(sessions >= 5 AND NOT bank_side\n                           AND net_degraded >= greatest(2, 0.2 * sessions)) AS `Degraded minutes`,\n                   countIf(on_backup) AS `Outage minutes`,\n                   round(quantilesTDigestMerge(0.5, 0.95)(rtt)[2]) AS `WAN RTT p95 ms`,\n                   round(100 * sum(retrans) / greatest(1, sum(packets)), 3) AS `Loss %`\n            FROM (\n    SELECT q.branch_id AS branch_id, q.minute AS minute,\n           dictGet('netflow.branch', 'primary_circuit_id', q.branch_id) AS circuit_id,\n           dictGet('netflow.branch', 'primary_provider', q.branch_id) AS provider,\n           sumIf(q.sessions, q.circuit_role = 'primary') AS sessions,\n           sumIf(q.net_degraded, q.circuit_role = 'primary') AS net_degraded,\n           sumIf(q.retrans, q.circuit_role = 'primary') AS retrans,\n           sumIf(q.packets, q.circuit_role = 'primary') AS packets,\n           quantilesTDigestMergeStateIf(0.5, 0.95)(q.client_rtt_ms, q.circuit_role = 'primary')\n               AS rtt,\n           sumIf(q.sessions, q.circuit_role = 'backup') > 0 AS on_backup,\n           any(sw.bad_switches) >= 1 AND any(sw.healthy_switches) >= 1 AS bank_side\n    FROM netflow.quality_1m AS q\n    GLOBAL LEFT JOIN (\n        SELECT splitByString('-SW', element_id)[1] AS branch_id, minute,\n               countIf(degraded >= greatest(2, 0.2 * sessions)) AS bad_switches,\n               countIf(sessions >= 3 AND degraded <= 0.05 * sessions) AS healthy_switches\n        FROM (SELECT e.element_id AS element_id, e.minute AS minute,\n                     sum(e.sessions) AS sessions, sum(e.degraded) AS degraded\n              FROM netflow.element_1m AS e\n              WHERE e.element_type = 'switch' AND $__timeFilter(e.minute)\n              GROUP BY element_id, minute)\n        GROUP BY branch_id, minute\n    ) AS sw ON sw.branch_id = q.branch_id AND sw.minute = q.minute\n    WHERE $__timeFilter(q.minute) AND q.minute < toStartOfMinute(now())\n    GROUP BY q.branch_id, q.minute\n) AS m\n            WHERE provider IN (${provider:singlequote})\n            GROUP BY provider ORDER BY provider",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#8e8e8a"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Network-degraded %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "#0ca30c"
+                    },
+                    {
+                      "value": 1,
+                      "color": "#fab219"
+                    },
+                    {
+                      "value": 5,
+                      "color": "#d03b3b"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Degraded minutes"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "#0ca30c"
+                    },
+                    {
+                      "value": 1,
+                      "color": "#fab219"
+                    },
+                    {
+                      "value": 15,
+                      "color": "#d03b3b"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Outage minutes"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "#0ca30c"
+                    },
+                    {
+                      "value": 1,
+                      "color": "#d03b3b"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "WAN RTT p95 ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "#0ca30c"
+                    },
+                    {
+                      "value": 60,
+                      "color": "#fab219"
+                    },
+                    {
+                      "value": 70,
+                      "color": "#d03b3b"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Loss %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [],
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 2
+    },
+    {
+      "type": "timeseries",
+      "title": "Network-degraded sessions by provider (primary circuits)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 3,
+        "w": 10,
+        "h": 6
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT minute AS time, provider,\n                   100 * sumIf(net_degraded, NOT bank_side) / greatest(1, sum(sessions))\n                       AS degraded_pct\n            FROM (\n    SELECT q.branch_id AS branch_id, q.minute AS minute,\n           dictGet('netflow.branch', 'primary_circuit_id', q.branch_id) AS circuit_id,\n           dictGet('netflow.branch', 'primary_provider', q.branch_id) AS provider,\n           sumIf(q.sessions, q.circuit_role = 'primary') AS sessions,\n           sumIf(q.net_degraded, q.circuit_role = 'primary') AS net_degraded,\n           sumIf(q.retrans, q.circuit_role = 'primary') AS retrans,\n           sumIf(q.packets, q.circuit_role = 'primary') AS packets,\n           quantilesTDigestMergeStateIf(0.5, 0.95)(q.client_rtt_ms, q.circuit_role = 'primary')\n               AS rtt,\n           sumIf(q.sessions, q.circuit_role = 'backup') > 0 AS on_backup,\n           any(sw.bad_switches) >= 1 AND any(sw.healthy_switches) >= 1 AS bank_side\n    FROM netflow.quality_1m AS q\n    GLOBAL LEFT JOIN (\n        SELECT splitByString('-SW', element_id)[1] AS branch_id, minute,\n               countIf(degraded >= greatest(2, 0.2 * sessions)) AS bad_switches,\n               countIf(sessions >= 3 AND degraded <= 0.05 * sessions) AS healthy_switches\n        FROM (SELECT e.element_id AS element_id, e.minute AS minute,\n                     sum(e.sessions) AS sessions, sum(e.degraded) AS degraded\n              FROM netflow.element_1m AS e\n              WHERE e.element_type = 'switch' AND $__timeFilter(e.minute)\n              GROUP BY element_id, minute)\n        GROUP BY branch_id, minute\n    ) AS sw ON sw.branch_id = q.branch_id AND sw.minute = q.minute\n    WHERE $__timeFilter(q.minute) AND q.minute < toStartOfMinute(now())\n    GROUP BY q.branch_id, q.minute\n) AS m\n            WHERE provider IN (${provider:singlequote})\n            GROUP BY time, provider ORDER BY time",
+          "format": 0,
+          "queryType": "timeseries"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisBorderShow": false,
+            "axisSoftMin": 0,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "displayName": "${__field.labels.provider}"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(.* )?MER$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3987e5"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(.* )?SAV$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d95926"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(.* )?CRS$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#199e70"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 3
+    },
+    {
+      "type": "table",
+      "title": "Circuit evidence",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT circuit_id AS Circuit, any(branch_id) AS Branch, provider AS Provider,\n                   dictGet('netflow.circuit_by_tunnel', 'pop_id',\n                           toUInt64(extract(circuit_id, '[0-9]+'))) AS PoP,\n                   sum(sessions) AS Sessions,\n                   countIf(minute_degraded) AS `Degraded minutes`,\n                   countIf(on_backup) AS `Outage minutes`,\n                   round(100 * sum(net_degraded) / greatest(1, sum(sessions)), 2)\n                       AS `Network-degraded %`,\n                   round(quantilesTDigestMerge(0.5, 0.95)(rtt)[2]) AS `WAN RTT p95 ms`,\n                   round(100 * sum(retrans) / greatest(1, sum(packets)), 2) AS `Loss %`,\n                   minIf(minute, minute_degraded OR on_backup) AS `First affected`,\n                   maxIf(minute, minute_degraded OR on_backup) AS `Last affected`\n            FROM (\n                SELECT *, sessions >= 5 AND NOT bank_side\n                          AND net_degraded >= greatest(2, 0.2 * sessions) AS minute_degraded\n                FROM (\n    SELECT q.branch_id AS branch_id, q.minute AS minute,\n           dictGet('netflow.branch', 'primary_circuit_id', q.branch_id) AS circuit_id,\n           dictGet('netflow.branch', 'primary_provider', q.branch_id) AS provider,\n           sumIf(q.sessions, q.circuit_role = 'primary') AS sessions,\n           sumIf(q.net_degraded, q.circuit_role = 'primary') AS net_degraded,\n           sumIf(q.retrans, q.circuit_role = 'primary') AS retrans,\n           sumIf(q.packets, q.circuit_role = 'primary') AS packets,\n           quantilesTDigestMergeStateIf(0.5, 0.95)(q.client_rtt_ms, q.circuit_role = 'primary')\n               AS rtt,\n           sumIf(q.sessions, q.circuit_role = 'backup') > 0 AS on_backup,\n           any(sw.bad_switches) >= 1 AND any(sw.healthy_switches) >= 1 AS bank_side\n    FROM netflow.quality_1m AS q\n    GLOBAL LEFT JOIN (\n        SELECT splitByString('-SW', element_id)[1] AS branch_id, minute,\n               countIf(degraded >= greatest(2, 0.2 * sessions)) AS bad_switches,\n               countIf(sessions >= 3 AND degraded <= 0.05 * sessions) AS healthy_switches\n        FROM (SELECT e.element_id AS element_id, e.minute AS minute,\n                     sum(e.sessions) AS sessions, sum(e.degraded) AS degraded\n              FROM netflow.element_1m AS e\n              WHERE e.element_type = 'switch' AND $__timeFilter(e.minute)\n              GROUP BY element_id, minute)\n        GROUP BY branch_id, minute\n    ) AS sw ON sw.branch_id = q.branch_id AND sw.minute = q.minute\n    WHERE $__timeFilter(q.minute) AND q.minute < toStartOfMinute(now())\n    GROUP BY q.branch_id, q.minute\n)\n            ) AS m\n            WHERE provider IN (${provider:singlequote})\n            GROUP BY circuit_id, provider\n            HAVING `Degraded minutes` + `Outage minutes` > 0\n            ORDER BY `Outage minutes` + `Degraded minutes` DESC LIMIT 50",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#8e8e8a"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Degraded minutes"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "#fab219"
+                    },
+                    {
+                      "value": 5,
+                      "color": "#ec835a"
+                    },
+                    {
+                      "value": 15,
+                      "color": "#d03b3b"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Outage minutes"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "#0ca30c"
+                    },
+                    {
+                      "value": 1,
+                      "color": "#d03b3b"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Network-degraded %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "WAN RTT p95 ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Loss %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "First affected"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Last affected"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [],
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 4
+    }
+  ]
+}
