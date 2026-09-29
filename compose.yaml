@@ -218,6 +218,7 @@ services:
     environment:
       NETGEN_KAFKA_BOOTSTRAP: kafka:9092
       NETGEN_LOAD_FACTOR: ${NETGEN_LOAD_FACTOR:-5}
+      NETGEN_LATE_MAX_S: ${NETGEN_LATE_MAX_S:-300}
     ports:
       - "127.0.0.1:8088:8088"
     depends_on:
