@@ -14,6 +14,7 @@ variable "tfc_live_workspace" {
 }
 
 variable "github_repository" {
-  type    = string
-  default = "ifyjakande/bank-network-intelligence"
+  description = "owner@owner_id/repo@repo_id: GitHub's immutable OIDC subject, safe from renames"
+  type        = string
+  default     = "ifyjakande@53233563/bank-network-intelligence@1395810700"
 }

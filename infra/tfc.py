@@ -167,6 +167,7 @@ def live_vars(role_arn: str) -> None:
 if __name__ == "__main__":
     commands = {
         "workspaces": workspaces,
+        "connect-vcs": connect_vcs,
         "bootstrap-keys": bootstrap_keys,
         "drop-bootstrap-keys": drop_bootstrap_keys,
     }
