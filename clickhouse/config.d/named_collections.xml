@@ -1,0 +1,32 @@
+<clickhouse>
+    <named_collections>
+        <!-- read-only view of the inventory; credentials come from the environment -->
+        <pg_inventory>
+            <host>postgres</host>
+            <port>5432</port>
+            <user>ch_reader</user>
+            <password from_env="PG_CH_READER_PASSWORD"/>
+            <database>bank</database>
+            <schema>inventory</schema>
+        </pg_inventory>
+        <kafka_flows>
+            <kafka_broker_list>kafka:9092</kafka_broker_list>
+            <kafka_topic_list>netflow.halfflows.v1</kafka_topic_list>
+            <kafka_group_name>clickhouse-halfflows</kafka_group_name>
+            <kafka_format>JSONEachRow</kafka_format>
+            <kafka_num_consumers>1</kafka_num_consumers>
+            <kafka_max_block_size>65536</kafka_max_block_size>
+            <kafka_flush_interval_ms>2000</kafka_flush_interval_ms>
+            <kafka_handle_error_mode>stream</kafka_handle_error_mode>
+        </kafka_flows>
+        <kafka_faults>
+            <kafka_broker_list>kafka:9092</kafka_broker_list>
+            <kafka_topic_list>netflow.faults.v1</kafka_topic_list>
+            <kafka_group_name>clickhouse-faults</kafka_group_name>
+            <kafka_format>JSONEachRow</kafka_format>
+            <kafka_num_consumers>1</kafka_num_consumers>
+            <kafka_flush_interval_ms>1000</kafka_flush_interval_ms>
+            <kafka_handle_error_mode>stream</kafka_handle_error_mode>
+        </kafka_faults>
+    </named_collections>
+</clickhouse>
