@@ -19,3 +19,8 @@ __pycache__/
 *.jsonl
 .DS_Store
 .claude/
+
+# terraform
+.terraform/
+.terraform.lock.hcl.bak
+*.tfplan
