@@ -107,14 +107,8 @@ module "tfc_live_role" {
 
 # --- GitHub Actions: redeploy the app over SSM on merge to main --------------------------
 
-module "github_oidc_provider" {
-  source  = "terraform-aws-modules/iam/aws//modules/iam-oidc-provider"
-  version = "6.8.2"
-
-  url            = "https://token.actions.githubusercontent.com"
-  client_id_list = ["sts.amazonaws.com"]
-}
-
+# The GitHub OIDC provider already exists in this account (one per URL) and other repos
+# use it, so it is referenced by its standard ARN through enable_github_oidc, not managed here.
 module "github_deploy_role" {
   source  = "terraform-aws-modules/iam/aws//modules/iam-role"
   version = "6.8.2"
