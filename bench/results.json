@@ -1,0 +1,135 @@
+{
+  "rows": 100000000,
+  "clickhouse": "26.8.14.3",
+  "runs_per_query": 5,
+  "setup": "dedicated single ClickHouse server, 5 GB container, laptop (Docker)",
+  "load": {
+    "generate_s": 72.2,
+    "load_by_time_s": 46.8,
+    "load_by_branch_s": 56.1,
+    "load_naive_types_s": 66.3,
+    "build_rollup_s": 61.4
+  },
+  "storage": [
+    {
+      "table": "by_time",
+      "rows": 100000000,
+      "compressed_bytes": 4795592587,
+      "uncompressed_bytes": 9681616381,
+      "ratio": 2.02
+    },
+    {
+      "table": "by_branch",
+      "rows": 100000000,
+      "compressed_bytes": 4170449074,
+      "uncompressed_bytes": 9586214714,
+      "ratio": 2.3
+    },
+    {
+      "table": "naive_types",
+      "rows": 100000000,
+      "compressed_bytes": 7540434820,
+      "uncompressed_bytes": 21633477417,
+      "ratio": 2.87
+    },
+    {
+      "table": "rollup_1m",
+      "rows": 18885818,
+      "compressed_bytes": 617853453,
+      "uncompressed_bytes": 1310075287,
+      "ratio": 2.12
+    }
+  ],
+  "queries": [
+    {
+      "experiment": "E1_sort_key",
+      "variant": "by_time",
+      "query": "SELECT app, count(), countIf(degraded), quantile(0.95)(response_ms) FROM bench.by_time WHERE branch_id = 'BR-0017' AND session_start >= '2026-09-20 00:00:00' AND session_start < '2026-09-21 00:00:00' GROUP BY app",
+      "median_ms": 125,
+      "rows_read": 33332715,
+      "bytes_read": 535987010,
+      "peak_memory": 9031596
+    },
+    {
+      "experiment": "E1_sort_key",
+      "variant": "by_branch",
+      "query": "SELECT app, count(), countIf(degraded), quantile(0.95)(response_ms) FROM bench.by_branch WHERE branch_id = 'BR-0017' AND session_start >= '2026-09-20 00:00:00' AND session_start < '2026-09-21 00:00:00' GROUP BY app",
+      "median_ms": 4,
+      "rows_read": 98304,
+      "bytes_read": 1482634,
+      "peak_memory": 6193039
+    },
+    {
+      "experiment": "E2_rollup",
+      "variant": "raw_sessions",
+      "query": "SELECT toStartOfMinute(session_start) AS m, criticality, countIf(degraded) / count() FROM bench.by_branch WHERE session_start >= '2026-09-20 00:00:00' AND session_start < '2026-09-21 00:00:00' GROUP BY m, criticality ORDER BY m",
+      "median_ms": 279,
+      "rows_read": 33332715,
+      "bytes_read": 302657062,
+      "peak_memory": 25681065
+    },
+    {
+      "experiment": "E2_rollup",
+      "variant": "rollup_1m",
+      "query": "SELECT minute AS m, criticality, sum(degraded) / sum(sessions) FROM bench.rollup_1m WHERE minute >= '2026-09-20 00:00:00' AND minute < '2026-09-21 00:00:00' GROUP BY m, criticality ORDER BY m",
+      "median_ms": 39,
+      "rows_read": 6302906,
+      "bytes_read": 132361026,
+      "peak_memory": 9385921
+    },
+    {
+      "experiment": "E3_types",
+      "variant": "naive_types",
+      "query": "SELECT app, count(), avg(client_rtt_ms), countIf(degraded) FROM bench.naive_types GROUP BY app",
+      "median_ms": 511,
+      "rows_read": 100000000,
+      "bytes_read": 2814209954,
+      "peak_memory": 12485373
+    },
+    {
+      "experiment": "E3_types",
+      "variant": "by_branch",
+      "query": "SELECT app, count(), avg(client_rtt_ms), countIf(degraded) FROM bench.by_branch GROUP BY app",
+      "median_ms": 321,
+      "rows_read": 100000000,
+      "bytes_read": 607996424,
+      "peak_memory": 8196414
+    },
+    {
+      "experiment": "E4_projection",
+      "variant": "no_projection",
+      "query": "SELECT toStartOfHour(session_start) AS h, count(), countIf(degraded) FROM bench.by_branch WHERE circuit_id = 'CKT-1035' AND session_start >= '2026-09-18' AND session_start < '2026-09-21' GROUP BY h ORDER BY h",
+      "median_ms": 38,
+      "rows_read": 100000000,
+      "bytes_read": 170723800,
+      "peak_memory": 6857005
+    },
+    {
+      "experiment": "E4_projection",
+      "variant": "with_projection",
+      "query": "SELECT toStartOfHour(session_start) AS h, count(), countIf(degraded) FROM bench.by_branch WHERE circuit_id = 'CKT-1035' AND session_start >= '2026-09-18' AND session_start < '2026-09-21' GROUP BY h ORDER BY h",
+      "median_ms": 4,
+      "rows_read": 270336,
+      "bytes_read": 2454746,
+      "peak_memory": 8371755
+    },
+    {
+      "experiment": "E5_skip_index",
+      "variant": "no_index",
+      "query": "SELECT count() FROM bench.by_time WHERE community_id = '1:x6YOl6UaPyU='",
+      "median_ms": 239,
+      "rows_read": 100000000,
+      "bytes_read": 1699994224,
+      "peak_memory": 6643693
+    },
+    {
+      "experiment": "E5_skip_index",
+      "variant": "bloom_filter",
+      "query": "SELECT count() FROM bench.by_time WHERE community_id = '1:x6YOl6UaPyU='",
+      "median_ms": 12,
+      "rows_read": 1146880,
+      "bytes_read": 19496912,
+      "peak_memory": 6647837
+    }
+  ]
+}
