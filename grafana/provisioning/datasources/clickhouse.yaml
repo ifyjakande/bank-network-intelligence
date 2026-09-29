@@ -1,0 +1,20 @@
+apiVersion: 1
+datasources:
+  - name: ClickHouse
+    uid: clickhouse
+    type: grafana-clickhouse-datasource
+    isDefault: true
+    editable: false
+    jsonData:
+      # a network alias every ClickHouse node answers to: no single node is critical
+      host: ch-query
+      port: 9000
+      protocol: native
+      username: grafana
+      defaultDatabase: netflow
+      # the plugin sends max_execution_time = queryTimeout + 4 s; this lands exactly on
+      # the readonly profile's 30 s ceiling
+      queryTimeout: "26"
+      dialTimeout: "10"
+    secureJsonData:
+      password: $CH_GRAFANA_PASSWORD

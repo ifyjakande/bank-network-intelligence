@@ -79,8 +79,7 @@ class Engine:
             cut = min(s.end_us, start + self.timeout_us)
             heapq.heappush(self._pending, (cut + self._delay_us(), next(self._seq), s))
 
-    def _flush(self, now_us: int) -> None:
-        t1_us = now_us
+    def _flush(self, t1_us: int) -> None:
         while self._pending and self._pending[0][0] <= t1_us:
             at, _, s = heapq.heappop(self._pending)
             cut = min(s.end_us, s.exported_until_us + self.timeout_us)

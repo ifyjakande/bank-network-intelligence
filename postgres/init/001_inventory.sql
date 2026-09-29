@@ -114,16 +114,25 @@ JOIN providers p ON p.code = c.provider;
 
 CREATE VIEW v_branch AS
 SELECT b.branch_id, b.region, b.size, b.router_id,
-       split_part(b.switch_ids, '|', 1) AS payment_switch_id
-FROM branches b;
+       split_part(b.switch_ids, '|', 1) AS payment_switch_id,
+       c.provider AS primary_provider,
+       c.circuit_id AS primary_circuit_id
+FROM branches b
+JOIN circuits c ON c.circuit_id = b.primary_circuit_id;
 
 CREATE VIEW v_server_by_ip AS
 SELECT (s.ip - '0.0.0.0'::inet) AS ip_num, s.server_id, s.app, s.dc
 FROM servers s;
 
+-- every app keeps its category and criticality; one without SLA targets yet is scored
+-- against generic targets instead of disappearing from the dictionary
 CREATE VIEW v_app AS
 SELECT a.name, a.category, a.criticality,
-       t.response_good_ms, t.response_bad_ms, t.rtt_good_ms, t.rtt_bad_ms,
-       t.retrans_good_pct, t.retrans_bad_pct
+       coalesce(t.response_good_ms, 300) AS response_good_ms,
+       coalesce(t.response_bad_ms, 1000) AS response_bad_ms,
+       coalesce(t.rtt_good_ms, 40) AS rtt_good_ms,
+       coalesce(t.rtt_bad_ms, 100) AS rtt_bad_ms,
+       coalesce(t.retrans_good_pct, 1) AS retrans_good_pct,
+       coalesce(t.retrans_bad_pct, 3) AS retrans_bad_pct
 FROM apps a
-JOIN sla_targets t ON t.app = a.name;
+LEFT JOIN sla_targets t ON t.app = a.name;

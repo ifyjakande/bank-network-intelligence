@@ -15,8 +15,10 @@
             <kafka_group_name>clickhouse-halfflows</kafka_group_name>
             <kafka_format>JSONEachRow</kafka_format>
             <kafka_num_consumers>1</kafka_num_consumers>
-            <kafka_max_block_size>65536</kafka_max_block_size>
-            <kafka_flush_interval_ms>2000</kafka_flush_interval_ms>
+            <!-- fewer, bigger inserts: each flush becomes a part on every shard and replica,
+                 so flush size (not message rate) drives merge load -->
+            <kafka_max_block_size>262144</kafka_max_block_size>
+            <kafka_flush_interval_ms>7500</kafka_flush_interval_ms>
             <kafka_handle_error_mode>stream</kafka_handle_error_mode>
         </kafka_flows>
         <kafka_faults>

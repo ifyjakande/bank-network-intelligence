@@ -25,9 +25,15 @@ class Settings(BaseSettings):
     stitch_interval_s: float = Field(10.0, gt=0)
     stitch_safety_s: int = Field(10, ge=0)  # never read rows newer than this: inserts in flight
     stitch_max_window_s: int = Field(120, gt=0)  # catch up in bounded chunks
-    stitch_timeout_s: int = Field(900, gt=0)  # emit a session incomplete after this long
-    stitch_lookback_s: int = Field(7200, gt=0)  # longest session we stitch
+    stitch_timeout_s: int = Field(900, gt=0)  # emit a session incomplete after this long idle
+    # re-examine each window this many seconds later, before the idle-timeout sweep
+    stitch_recheck_offsets_s: list[int] = Field(default_factory=lambda: [60, 300])
+    stitch_sync_timeout_s: int = Field(10, gt=0)  # bounded wait for replica catch-up
+    # longest session we stitch; lookups are by id, so this only bounds partition pruning
+    stitch_lookback_s: int = Field(86400, gt=0)
     stitch_pair_tolerance_ms: int = Field(5000, gt=0)  # max c2s -> s2c first-seen gap
+    stitch_probe_skew_ms: int = Field(50, ge=0)  # clock skew allowed between two probes
+    stitch_query_timeout_s: int = Field(240, gt=0)  # server cancels before the client gives up
     degraded_below: int = Field(70, ge=1, le=100)  # quality score under this = degraded
 
     metrics_port: int = 9103

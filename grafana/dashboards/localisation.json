@@ -1,0 +1,783 @@
+{
+  "uid": "bank-localise",
+  "title": "Fault localisation",
+  "description": "Which single element explains the degraded sessions",
+  "tags": [
+    "bank-network"
+  ],
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 41,
+  "version": 1,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "window",
+        "label": "Window (minutes)",
+        "type": "custom",
+        "query": "5,10,15,30,60",
+        "current": {
+          "text": "5",
+          "value": "5"
+        },
+        "options": [
+          {
+            "text": "5",
+            "value": "5",
+            "selected": true
+          },
+          {
+            "text": "10",
+            "value": "10",
+            "selected": false
+          },
+          {
+            "text": "15",
+            "value": "15",
+            "selected": false
+          },
+          {
+            "text": "30",
+            "value": "30",
+            "selected": false
+          },
+          {
+            "text": "60",
+            "value": "60",
+            "selected": false
+          }
+        ]
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "name": "Injected incidents (ground truth)",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "clickhouse"
+        },
+        "enable": true,
+        "iconColor": "#9085e9",
+        "target": {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT started_at AS time, if(ongoing, now64(6), ended_at) AS timeEnd,\n               label AS text, kind AS tags\n        FROM netflow.incidents\n        WHERE started_at <= $__toTime AND (ongoing OR ended_at >= $__fromTime)",
+          "format": 1,
+          "queryType": "table"
+        }
+      }
+    ]
+  },
+  "links": [
+    {
+      "type": "dashboards",
+      "tags": [
+        "bank-network"
+      ],
+      "asDropdown": false,
+      "includeVars": true,
+      "keepTime": true,
+      "title": "Dashboards"
+    }
+  ],
+  "panels": [
+    {
+      "type": "text",
+      "title": "",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Fault localisation\nEvery element a degraded session crossed is scored by **precision** (share of its sessions that are degraded) and **coverage** (share of all degraded sessions it carries). The element that explains the most with the least collateral is the most likely cause. Elements that carry exactly the same sessions cannot be told apart from traffic alone: a branch router and its circuit always tie, and so does an access switch when only its devices are active (overnight, the ATMs). The ranked list shows every contender."
+      },
+      "transparent": true,
+      "id": 1
+    },
+    {
+      "type": "stat",
+      "title": "Most likely cause",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 8,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT concat(element_type, ' \u00b7 ', element_id) FROM (SELECT * FROM (-- Fault localisation: which single element best explains the degraded sessions?\n--\n-- For every element on a session path (switch, router, circuit, PoP, provider, gateway,\n-- server, app) over the window:\n--   precision = degraded sessions through it / all sessions through it\n--   coverage  = degraded sessions through it / all degraded sessions\n-- and rank by their harmonic mean. A router and its circuit often carry identical\n-- sessions and tie; both are reported, as the operator would want to see.\n--\n-- params: window_min (UInt16), min_degraded (UInt32)\nWITH\n    per_minute AS (\n        -- one row per element and minute, however the rollup's parts happen to be merged\n        SELECT\n            e.element_type AS element_type,\n            e.element_id AS element_id,\n            e.minute AS minute,\n            sum(e.sessions) AS sessions,\n            sum(e.degraded) AS degraded,\n            uniqMergeState(e.degraded_devices) AS degraded_devices,\n            uniqMergeState(e.degraded_branches) AS degraded_branches,\n            groupUniqArrayMergeState(16)(e.degraded_apps) AS degraded_apps\n        FROM netflow.element_1m AS e\n        WHERE e.minute >= toStartOfMinute(now() - toIntervalMinute(${window}))\n          AND e.minute < toStartOfMinute(now())\n        GROUP BY element_type, element_id, minute\n    ),\n    per_element AS (\n        SELECT\n            element_type,\n            element_id,\n            sum(p.sessions) AS sessions,\n            sum(p.degraded) AS degraded,\n            uniqMerge(p.degraded_devices) AS devices_hit,\n            uniqMerge(p.degraded_branches) AS branches_hit,\n            groupUniqArrayMerge(16)(p.degraded_apps) AS apps_hit,\n            -- the first minute it was meaningfully degraded, not the first stray session\n            minIf(p.minute, p.degraded >= greatest(2, 0.2 * p.sessions)) AS first_degraded_minute\n        FROM per_minute AS p\n        GROUP BY element_type, element_id\n    ),\n    total AS (\n        SELECT sum(degraded) AS all_degraded\n        FROM per_element\n        WHERE element_type = 'app'  -- every session has exactly one app: no double count\n    )\nSELECT\n    element_type,\n    element_id,\n    degraded,\n    sessions,\n    round(degraded / sessions, 3) AS precision,\n    round(degraded / (SELECT all_degraded FROM total), 3) AS coverage,\n    round(2 * precision * coverage / (precision + coverage), 3) AS score,\n    devices_hit,\n    branches_hit,\n    apps_hit,\n    first_degraded_minute AS since\nFROM per_element\nWHERE degraded >= 5\nORDER BY score DESC, precision DESC\n LIMIT 1))",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#8e8e8a"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "\u2013"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/.*/",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 2
+    },
+    {
+      "type": "stat",
+      "title": "Explains (coverage)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 3,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT 100 * coverage FROM (SELECT * FROM (-- Fault localisation: which single element best explains the degraded sessions?\n--\n-- For every element on a session path (switch, router, circuit, PoP, provider, gateway,\n-- server, app) over the window:\n--   precision = degraded sessions through it / all sessions through it\n--   coverage  = degraded sessions through it / all degraded sessions\n-- and rank by their harmonic mean. A router and its circuit often carry identical\n-- sessions and tie; both are reported, as the operator would want to see.\n--\n-- params: window_min (UInt16), min_degraded (UInt32)\nWITH\n    per_minute AS (\n        -- one row per element and minute, however the rollup's parts happen to be merged\n        SELECT\n            e.element_type AS element_type,\n            e.element_id AS element_id,\n            e.minute AS minute,\n            sum(e.sessions) AS sessions,\n            sum(e.degraded) AS degraded,\n            uniqMergeState(e.degraded_devices) AS degraded_devices,\n            uniqMergeState(e.degraded_branches) AS degraded_branches,\n            groupUniqArrayMergeState(16)(e.degraded_apps) AS degraded_apps\n        FROM netflow.element_1m AS e\n        WHERE e.minute >= toStartOfMinute(now() - toIntervalMinute(${window}))\n          AND e.minute < toStartOfMinute(now())\n        GROUP BY element_type, element_id, minute\n    ),\n    per_element AS (\n        SELECT\n            element_type,\n            element_id,\n            sum(p.sessions) AS sessions,\n            sum(p.degraded) AS degraded,\n            uniqMerge(p.degraded_devices) AS devices_hit,\n            uniqMerge(p.degraded_branches) AS branches_hit,\n            groupUniqArrayMerge(16)(p.degraded_apps) AS apps_hit,\n            -- the first minute it was meaningfully degraded, not the first stray session\n            minIf(p.minute, p.degraded >= greatest(2, 0.2 * p.sessions)) AS first_degraded_minute\n        FROM per_minute AS p\n        GROUP BY element_type, element_id\n    ),\n    total AS (\n        SELECT sum(degraded) AS all_degraded\n        FROM per_element\n        WHERE element_type = 'app'  -- every session has exactly one app: no double count\n    )\nSELECT\n    element_type,\n    element_id,\n    degraded,\n    sessions,\n    round(degraded / sessions, 3) AS precision,\n    round(degraded / (SELECT all_degraded FROM total), 3) AS coverage,\n    round(2 * precision * coverage / (precision + coverage), 3) AS score,\n    devices_hit,\n    branches_hit,\n    apps_hit,\n    first_degraded_minute AS since\nFROM per_element\nWHERE degraded >= 5\nORDER BY score DESC, precision DESC\n LIMIT 1))",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#8e8e8a"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "\u2013",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 3
+    },
+    {
+      "type": "stat",
+      "title": "Precision",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 3,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT 100 * precision FROM (SELECT * FROM (-- Fault localisation: which single element best explains the degraded sessions?\n--\n-- For every element on a session path (switch, router, circuit, PoP, provider, gateway,\n-- server, app) over the window:\n--   precision = degraded sessions through it / all sessions through it\n--   coverage  = degraded sessions through it / all degraded sessions\n-- and rank by their harmonic mean. A router and its circuit often carry identical\n-- sessions and tie; both are reported, as the operator would want to see.\n--\n-- params: window_min (UInt16), min_degraded (UInt32)\nWITH\n    per_minute AS (\n        -- one row per element and minute, however the rollup's parts happen to be merged\n        SELECT\n            e.element_type AS element_type,\n            e.element_id AS element_id,\n            e.minute AS minute,\n            sum(e.sessions) AS sessions,\n            sum(e.degraded) AS degraded,\n            uniqMergeState(e.degraded_devices) AS degraded_devices,\n            uniqMergeState(e.degraded_branches) AS degraded_branches,\n            groupUniqArrayMergeState(16)(e.degraded_apps) AS degraded_apps\n        FROM netflow.element_1m AS e\n        WHERE e.minute >= toStartOfMinute(now() - toIntervalMinute(${window}))\n          AND e.minute < toStartOfMinute(now())\n        GROUP BY element_type, element_id, minute\n    ),\n    per_element AS (\n        SELECT\n            element_type,\n            element_id,\n            sum(p.sessions) AS sessions,\n            sum(p.degraded) AS degraded,\n            uniqMerge(p.degraded_devices) AS devices_hit,\n            uniqMerge(p.degraded_branches) AS branches_hit,\n            groupUniqArrayMerge(16)(p.degraded_apps) AS apps_hit,\n            -- the first minute it was meaningfully degraded, not the first stray session\n            minIf(p.minute, p.degraded >= greatest(2, 0.2 * p.sessions)) AS first_degraded_minute\n        FROM per_minute AS p\n        GROUP BY element_type, element_id\n    ),\n    total AS (\n        SELECT sum(degraded) AS all_degraded\n        FROM per_element\n        WHERE element_type = 'app'  -- every session has exactly one app: no double count\n    )\nSELECT\n    element_type,\n    element_id,\n    degraded,\n    sessions,\n    round(degraded / sessions, 3) AS precision,\n    round(degraded / (SELECT all_degraded FROM total), 3) AS coverage,\n    round(2 * precision * coverage / (precision + coverage), 3) AS score,\n    devices_hit,\n    branches_hit,\n    apps_hit,\n    first_degraded_minute AS since\nFROM per_element\nWHERE degraded >= 5\nORDER BY score DESC, precision DESC\n LIMIT 1))",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#8e8e8a"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "\u2013",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 4
+    },
+    {
+      "type": "stat",
+      "title": "Devices hit",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 3,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT devices_hit FROM (SELECT * FROM (-- Fault localisation: which single element best explains the degraded sessions?\n--\n-- For every element on a session path (switch, router, circuit, PoP, provider, gateway,\n-- server, app) over the window:\n--   precision = degraded sessions through it / all sessions through it\n--   coverage  = degraded sessions through it / all degraded sessions\n-- and rank by their harmonic mean. A router and its circuit often carry identical\n-- sessions and tie; both are reported, as the operator would want to see.\n--\n-- params: window_min (UInt16), min_degraded (UInt32)\nWITH\n    per_minute AS (\n        -- one row per element and minute, however the rollup's parts happen to be merged\n        SELECT\n            e.element_type AS element_type,\n            e.element_id AS element_id,\n            e.minute AS minute,\n            sum(e.sessions) AS sessions,\n            sum(e.degraded) AS degraded,\n            uniqMergeState(e.degraded_devices) AS degraded_devices,\n            uniqMergeState(e.degraded_branches) AS degraded_branches,\n            groupUniqArrayMergeState(16)(e.degraded_apps) AS degraded_apps\n        FROM netflow.element_1m AS e\n        WHERE e.minute >= toStartOfMinute(now() - toIntervalMinute(${window}))\n          AND e.minute < toStartOfMinute(now())\n        GROUP BY element_type, element_id, minute\n    ),\n    per_element AS (\n        SELECT\n            element_type,\n            element_id,\n            sum(p.sessions) AS sessions,\n            sum(p.degraded) AS degraded,\n            uniqMerge(p.degraded_devices) AS devices_hit,\n            uniqMerge(p.degraded_branches) AS branches_hit,\n            groupUniqArrayMerge(16)(p.degraded_apps) AS apps_hit,\n            -- the first minute it was meaningfully degraded, not the first stray session\n            minIf(p.minute, p.degraded >= greatest(2, 0.2 * p.sessions)) AS first_degraded_minute\n        FROM per_minute AS p\n        GROUP BY element_type, element_id\n    ),\n    total AS (\n        SELECT sum(degraded) AS all_degraded\n        FROM per_element\n        WHERE element_type = 'app'  -- every session has exactly one app: no double count\n    )\nSELECT\n    element_type,\n    element_id,\n    degraded,\n    sessions,\n    round(degraded / sessions, 3) AS precision,\n    round(degraded / (SELECT all_degraded FROM total), 3) AS coverage,\n    round(2 * precision * coverage / (precision + coverage), 3) AS score,\n    devices_hit,\n    branches_hit,\n    apps_hit,\n    first_degraded_minute AS since\nFROM per_element\nWHERE degraded >= 5\nORDER BY score DESC, precision DESC\n LIMIT 1))",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#8e8e8a"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "\u2013",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 5
+    },
+    {
+      "type": "stat",
+      "title": "Degraded since",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 3,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT toUnixTimestamp(since) * 1000 FROM (SELECT * FROM (-- Fault localisation: which single element best explains the degraded sessions?\n--\n-- For every element on a session path (switch, router, circuit, PoP, provider, gateway,\n-- server, app) over the window:\n--   precision = degraded sessions through it / all sessions through it\n--   coverage  = degraded sessions through it / all degraded sessions\n-- and rank by their harmonic mean. A router and its circuit often carry identical\n-- sessions and tie; both are reported, as the operator would want to see.\n--\n-- params: window_min (UInt16), min_degraded (UInt32)\nWITH\n    per_minute AS (\n        -- one row per element and minute, however the rollup's parts happen to be merged\n        SELECT\n            e.element_type AS element_type,\n            e.element_id AS element_id,\n            e.minute AS minute,\n            sum(e.sessions) AS sessions,\n            sum(e.degraded) AS degraded,\n            uniqMergeState(e.degraded_devices) AS degraded_devices,\n            uniqMergeState(e.degraded_branches) AS degraded_branches,\n            groupUniqArrayMergeState(16)(e.degraded_apps) AS degraded_apps\n        FROM netflow.element_1m AS e\n        WHERE e.minute >= toStartOfMinute(now() - toIntervalMinute(${window}))\n          AND e.minute < toStartOfMinute(now())\n        GROUP BY element_type, element_id, minute\n    ),\n    per_element AS (\n        SELECT\n            element_type,\n            element_id,\n            sum(p.sessions) AS sessions,\n            sum(p.degraded) AS degraded,\n            uniqMerge(p.degraded_devices) AS devices_hit,\n            uniqMerge(p.degraded_branches) AS branches_hit,\n            groupUniqArrayMerge(16)(p.degraded_apps) AS apps_hit,\n            -- the first minute it was meaningfully degraded, not the first stray session\n            minIf(p.minute, p.degraded >= greatest(2, 0.2 * p.sessions)) AS first_degraded_minute\n        FROM per_minute AS p\n        GROUP BY element_type, element_id\n    ),\n    total AS (\n        SELECT sum(degraded) AS all_degraded\n        FROM per_element\n        WHERE element_type = 'app'  -- every session has exactly one app: no double count\n    )\nSELECT\n    element_type,\n    element_id,\n    degraded,\n    sessions,\n    round(degraded / sessions, 3) AS precision,\n    round(degraded / (SELECT all_degraded FROM total), 3) AS coverage,\n    round(2 * precision * coverage / (precision + coverage), 3) AS score,\n    devices_hit,\n    branches_hit,\n    apps_hit,\n    first_degraded_minute AS since\nFROM per_element\nWHERE degraded >= 5\nORDER BY score DESC, precision DESC\n LIMIT 1))",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "time:HH:mm",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#8e8e8a"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "\u2013"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "none",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 6
+    },
+    {
+      "type": "table",
+      "title": "Ranked candidates",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "-- Fault localisation: which single element best explains the degraded sessions?\n--\n-- For every element on a session path (switch, router, circuit, PoP, provider, gateway,\n-- server, app) over the window:\n--   precision = degraded sessions through it / all sessions through it\n--   coverage  = degraded sessions through it / all degraded sessions\n-- and rank by their harmonic mean. A router and its circuit often carry identical\n-- sessions and tie; both are reported, as the operator would want to see.\n--\n-- params: window_min (UInt16), min_degraded (UInt32)\nWITH\n    per_minute AS (\n        -- one row per element and minute, however the rollup's parts happen to be merged\n        SELECT\n            e.element_type AS element_type,\n            e.element_id AS element_id,\n            e.minute AS minute,\n            sum(e.sessions) AS sessions,\n            sum(e.degraded) AS degraded,\n            uniqMergeState(e.degraded_devices) AS degraded_devices,\n            uniqMergeState(e.degraded_branches) AS degraded_branches,\n            groupUniqArrayMergeState(16)(e.degraded_apps) AS degraded_apps\n        FROM netflow.element_1m AS e\n        WHERE e.minute >= toStartOfMinute(now() - toIntervalMinute(${window}))\n          AND e.minute < toStartOfMinute(now())\n        GROUP BY element_type, element_id, minute\n    ),\n    per_element AS (\n        SELECT\n            element_type,\n            element_id,\n            sum(p.sessions) AS sessions,\n            sum(p.degraded) AS degraded,\n            uniqMerge(p.degraded_devices) AS devices_hit,\n            uniqMerge(p.degraded_branches) AS branches_hit,\n            groupUniqArrayMerge(16)(p.degraded_apps) AS apps_hit,\n            -- the first minute it was meaningfully degraded, not the first stray session\n            minIf(p.minute, p.degraded >= greatest(2, 0.2 * p.sessions)) AS first_degraded_minute\n        FROM per_minute AS p\n        GROUP BY element_type, element_id\n    ),\n    total AS (\n        SELECT sum(degraded) AS all_degraded\n        FROM per_element\n        WHERE element_type = 'app'  -- every session has exactly one app: no double count\n    )\nSELECT\n    element_type,\n    element_id,\n    degraded,\n    sessions,\n    round(degraded / sessions, 3) AS precision,\n    round(degraded / (SELECT all_degraded FROM total), 3) AS coverage,\n    round(2 * precision * coverage / (precision + coverage), 3) AS score,\n    devices_hit,\n    branches_hit,\n    apps_hit,\n    first_degraded_minute AS since\nFROM per_element\nWHERE degraded >= 5\nORDER BY score DESC, precision DESC\nLIMIT 10",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#8e8e8a"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "score"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 1
+              },
+              {
+                "id": "decimals",
+                "value": 2
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "#8e8e8a"
+                    },
+                    {
+                      "value": 0.3,
+                      "color": "#fab219"
+                    },
+                    {
+                      "value": 0.6,
+                      "color": "#ec835a"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "precision"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "coverage"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "since"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "score",
+            "desc": true
+          }
+        ],
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 7
+    },
+    {
+      "type": "timeseries",
+      "title": "Degraded sessions per minute \u00b7 estate",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 14,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT minute AS time, sum(degraded) AS degraded\n            FROM netflow.quality_1m WHERE $__timeFilter(minute)\n            GROUP BY time ORDER BY time",
+          "format": 0,
+          "queryType": "timeseries"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisBorderShow": false,
+            "axisSoftMin": 0,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(.* )?degraded$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3987e5"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 8
+    },
+    {
+      "type": "table",
+      "title": "Injected incidents (ground truth)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 14,
+        "y": 16,
+        "w": 10,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT started_at AS Started, if(ongoing, NULL, ended_at) AS Ended,\n                   kind AS Kind, target AS Target, label AS Description, source AS Source\n            FROM netflow.incidents\n            WHERE started_at >= $__fromTime ORDER BY started_at DESC LIMIT 20",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#8e8e8a"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Started"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              },
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Ended"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dateTimeAsIso"
+              },
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [],
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 9
+    }
+  ]
+}

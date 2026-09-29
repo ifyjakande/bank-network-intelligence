@@ -68,7 +68,6 @@ class Session:
     ack_us: int | None
     first_req_us: int | None
     first_resp_us: int | None
-    next_export_us: int = 0
     exported_until_us: int = 0
     seq: int = 0
 
@@ -83,7 +82,7 @@ class SessionFactory:
         self.asym_rate = asym_rate
         self._internet_hosts = int(INTERNET_NET.num_addresses) - 2
 
-    def _pick_server(self, app: App, device: Device) -> tuple[str, Server | None, str]:
+    def _pick_server(self, app: App) -> tuple[str, Server | None, str]:
         if app.hosted == "internet":
             ip = str(INTERNET_NET.network_address + 1 + self.rng.randrange(self._internet_hosts))
             return ip, None, "DC1"  # all internet traffic backhauls to the DC1 edge
@@ -97,7 +96,7 @@ class SessionFactory:
         if device.device_type == "guest":
             client_ip = client_ip.rsplit(".", 1)[0] + f".{rng.randint(100, 249)}"
 
-        server_ip, server, dc = self._pick_server(app, device)
+        server_ip, server, dc = self._pick_server(app)
         gws = self.e.gateways_in(dc)
         probe_c2s = gws[rng.randrange(len(gws))].gateway_id
         probe_s2c = probe_c2s
@@ -196,7 +195,6 @@ class SessionFactory:
             ack_us=ack,
             first_req_us=req,
             first_resp_us=resp,
-            next_export_us=start_us,
             exported_until_us=start_us,
         )
 

@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS netflow.quality_1m_local ON CLUSTER netflow
     criticality       LowCardinality(String),
     sessions          SimpleAggregateFunction(sum, UInt64),
     degraded          SimpleAggregateFunction(sum, UInt64),
+    net_degraded      SimpleAggregateFunction(sum, UInt64),
     bytes             SimpleAggregateFunction(sum, UInt64),
     packets           SimpleAggregateFunction(sum, UInt64),
     retrans           SimpleAggregateFunction(sum, UInt64),
@@ -30,7 +31,8 @@ PARTITION BY toYYYYMM(minute)
 -- ride along in the sort key without adding rows; the index only uses the prefix
 PRIMARY KEY (minute, branch_id, app, circuit_id)
 ORDER BY (minute, branch_id, app, circuit_id, region, provider, pop_id, circuit_role, criticality)
-TTL minute + INTERVAL 180 DAY DELETE;
+TTL minute + INTERVAL 180 DAY DELETE
+SETTINGS ttl_only_drop_parts = 1;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS netflow.quality_1m_mv ON CLUSTER netflow
 TO netflow.quality_1m_local
@@ -40,6 +42,7 @@ AS SELECT
     branch_id, region, provider, pop_id, circuit_id, circuit_role, app, criticality,
     count() AS sessions,
     countIf(s.degraded) AS degraded,
+    countIf(s.net_degraded) AS net_degraded,
     sum(bytes_c2s + bytes_s2c) AS bytes,
     sum(packets_c2s + packets_s2c) AS packets,
     sum(retrans_c2s + retrans_s2c) AS retrans,
@@ -74,7 +77,8 @@ CREATE TABLE IF NOT EXISTS netflow.element_1m_local ON CLUSTER netflow
 ENGINE = ReplicatedAggregatingMergeTree
 PARTITION BY toYYYYMM(minute)
 ORDER BY (element_type, element_id, minute)
-TTL minute + INTERVAL 180 DAY DELETE;
+TTL minute + INTERVAL 180 DAY DELETE
+SETTINGS ttl_only_drop_parts = 1;
 
 CREATE MATERIALIZED VIEW IF NOT EXISTS netflow.element_1m_mv ON CLUSTER netflow
 TO netflow.element_1m_local

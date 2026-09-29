@@ -1,6 +1,7 @@
 -- Stitched, enriched sessions: one row per TCP/UDP session with both halves joined,
 -- network and application timings derived, and a 0-100 quality score against the
--- app's SLA targets. Written once per session by the stitcher.
+-- app's SLA targets. Written once per session by the stitcher. ReplacingMergeTree is a
+-- safety net only: the stitcher never writes a session twice on purpose.
 
 CREATE TABLE IF NOT EXISTS netflow.sessions_local ON CLUSTER netflow
 (
@@ -53,9 +54,12 @@ CREATE TABLE IF NOT EXISTS netflow.sessions_local ON CLUSTER netflow
     client_rtt_ms    Nullable(Float32),
     response_ms      Nullable(Float32),
     quality          UInt8,
-    degraded         Bool,
+    degraded         Bool,           -- quality under the threshold, whatever the cause
+    net_degraded     Bool,           -- the network path failed its SLA (RTT, loss, no return)
     -- the stitcher's emit-once check looks sessions up by id
-    INDEX idx_community_id community_id TYPE bloom_filter(0.01) GRANULARITY 4
+    INDEX idx_community_id community_id TYPE bloom_filter(0.01) GRANULARITY 4,
+    -- freshness monitoring filters on stitched_at, which is not in the sort key
+    INDEX idx_stitched_at stitched_at TYPE minmax GRANULARITY 1
 )
 ENGINE = ReplicatedReplacingMergeTree(stitched_at)
 PARTITION BY toYYYYMMDD(session_start)

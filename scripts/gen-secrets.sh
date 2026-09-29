@@ -26,5 +26,6 @@ CH_GRAFANA_PASSWORD_SHA256=$(sha "$ch_grafana")
 POSTGRES_PASSWORD=$pg_super
 PG_CH_READER_PASSWORD=$pg_reader
 PG_LOADER_PASSWORD=$pg_loader
+GRAFANA_ADMIN_PASSWORD=$(rand)
 ENV
 echo "wrote $out"

@@ -42,6 +42,13 @@ jobs:
       - name: unit tests
         run: uv run pytest -q
 
+  dashboards:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: generated dashboards and alert rules match their source
+        run: python3 grafana/build.py --check
+
   security:
     runs-on: ubuntu-24.04
     steps:
@@ -67,6 +74,8 @@ jobs:
       # short lateness so "no lost sessions" can be checked a couple of minutes in
       NETGEN_LATE_MAX_S: "30"
       NETGEN_LOAD_FACTOR: "20"
+      # only the faults the tests inject, so results do not depend on the time of day
+      NETGEN_FAULT_SCHEDULE: none
       INTEGRATION_SETTLE_MIN: "2"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
