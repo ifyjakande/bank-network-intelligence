@@ -1,0 +1,1184 @@
+{
+  "uid": "bank-estate",
+  "title": "Branch estate \u00b7 service quality",
+  "description": "Live service quality across the branch estate",
+  "tags": [
+    "bank-network"
+  ],
+  "editable": false,
+  "graphTooltip": 1,
+  "schemaVersion": 41,
+  "version": 1,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "30s",
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "region",
+        "label": "Region",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "clickhouse"
+        },
+        "query": "SELECT DISTINCT region FROM netflow.quality_1m WHERE minute > now() - INTERVAL 1 DAY ORDER BY region",
+        "definition": "SELECT DISTINCT region FROM netflow.quality_1m WHERE minute > now() - INTERVAL 1 DAY ORDER BY region",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      },
+      {
+        "name": "provider",
+        "label": "Provider",
+        "type": "query",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "clickhouse"
+        },
+        "query": "SELECT DISTINCT provider FROM netflow.quality_1m WHERE minute > now() - INTERVAL 1 DAY ORDER BY provider",
+        "definition": "SELECT DISTINCT provider FROM netflow.quality_1m WHERE minute > now() - INTERVAL 1 DAY ORDER BY provider",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      },
+      {
+        "name": "Injected incidents (ground truth)",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "clickhouse"
+        },
+        "enable": true,
+        "iconColor": "#9085e9",
+        "target": {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT started_at AS time, if(ongoing, now64(6), ended_at) AS timeEnd,\n               label AS text, kind AS tags\n        FROM netflow.incidents\n        WHERE started_at <= $__toTime AND (ongoing OR ended_at >= $__fromTime)",
+          "format": 1,
+          "queryType": "table"
+        }
+      }
+    ]
+  },
+  "links": [
+    {
+      "type": "dashboards",
+      "tags": [
+        "bank-network"
+      ],
+      "asDropdown": false,
+      "includeVars": true,
+      "keepTime": true,
+      "title": "Dashboards"
+    }
+  ],
+  "panels": [
+    {
+      "type": "text",
+      "title": "",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 2
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Branch estate \u00b7 service quality\nMeasured per session from encrypted-traffic metadata (no payloads, no decryption). *Reachability* is what up/down monitoring sees; the other tiles are what customers actually get. Violet bands are injected incidents."
+      },
+      "transparent": true,
+      "id": 1
+    },
+    {
+      "type": "stat",
+      "title": "Reachability (what ping says)",
+      "description": "Branches in the selection with any traffic in the last 5 minutes.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 2,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "WITH expected AS (\n                SELECT branch_id FROM netflow.circuit_by_tunnel\n                WHERE role = 'primary' AND provider IN (${provider:singlequote})\n                  AND dictGet('netflow.branch', 'region', branch_id) IN (${region:singlequote}))\n            SELECT 100 * (SELECT uniqExact(branch_id) FROM netflow.quality_1m\n                          WHERE minute >= toStartOfMinute(now()) - INTERVAL 5 MINUTE AND minute < toStartOfMinute(now()) AND branch_id IN (SELECT branch_id FROM expected))\n                       / (SELECT count() FROM expected)",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#d03b3b"
+              },
+              {
+                "value": 99,
+                "color": "#0ca30c"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "\u2013",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 2
+    },
+    {
+      "type": "stat",
+      "title": "Estate quality score",
+      "description": "Mean 0-100 session score against each app's SLA targets, last 5 minutes.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 2,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT sum(quality_sum) / sum(sessions) FROM netflow.quality_1m\n            WHERE minute >= toStartOfMinute(now()) - INTERVAL 5 MINUTE AND minute < toStartOfMinute(now()) AND region IN (${region:singlequote}) AND dictGet('netflow.branch', 'primary_provider', branch_id) IN (${provider:singlequote})",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#d03b3b"
+              },
+              {
+                "value": 70,
+                "color": "#fab219"
+              },
+              {
+                "value": 90,
+                "color": "#0ca30c"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "\u2013",
+          "decimals": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 3
+    },
+    {
+      "type": "stat",
+      "title": "Degraded sessions",
+      "description": "Share of sessions scoring under 70, last 5 minutes.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 2,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT 100 * sum(degraded) / sum(sessions) FROM netflow.quality_1m\n            WHERE minute >= toStartOfMinute(now()) - INTERVAL 5 MINUTE AND minute < toStartOfMinute(now()) AND region IN (${region:singlequote}) AND dictGet('netflow.branch', 'primary_provider', branch_id) IN (${provider:singlequote})",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#0ca30c"
+              },
+              {
+                "value": 1,
+                "color": "#fab219"
+              },
+              {
+                "value": 5,
+                "color": "#d03b3b"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "\u2013",
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 4
+    },
+    {
+      "type": "stat",
+      "title": "Branches degraded now",
+      "description": "Branches where at least 20% of sessions are degraded (min 10).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 2,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT count() FROM (\n                SELECT branch_id FROM netflow.quality_1m\n                WHERE minute >= toStartOfMinute(now()) - INTERVAL 5 MINUTE AND minute < toStartOfMinute(now()) AND region IN (${region:singlequote}) AND dictGet('netflow.branch', 'primary_provider', branch_id) IN (${provider:singlequote})\n                GROUP BY branch_id\n                HAVING sum(sessions) >= 10 AND sum(degraded) / sum(sessions) >= 0.2)",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#0ca30c"
+              },
+              {
+                "value": 1,
+                "color": "#d03b3b"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "\u2013",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 5
+    },
+    {
+      "type": "stat",
+      "title": "Devices affected",
+      "description": "Distinct ATMs, terminals and workstations with a degraded session, last 5 minutes.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 2,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT uniqMerge(degraded_devices) FROM netflow.quality_1m\n            WHERE minute >= toStartOfMinute(now()) - INTERVAL 5 MINUTE AND minute < toStartOfMinute(now()) AND region IN (${region:singlequote}) AND dictGet('netflow.branch', 'primary_provider', branch_id) IN (${provider:singlequote})",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#0ca30c"
+              },
+              {
+                "value": 1,
+                "color": "#fab219"
+              },
+              {
+                "value": 25,
+                "color": "#d03b3b"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "\u2013",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 6
+    },
+    {
+      "type": "stat",
+      "title": "Card authorisation p95",
+      "description": "95th percentile time from request to first response byte.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 2,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT quantilesTDigestMerge(0.5, 0.95)(response_ms)[2] FROM netflow.quality_1m\n            WHERE minute >= toStartOfMinute(now()) - INTERVAL 5 MINUTE AND minute < toStartOfMinute(now()) AND app = 'card_authorisation'\n              AND region IN (${region:singlequote}) AND dictGet('netflow.branch', 'primary_provider', branch_id) IN (${provider:singlequote})",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#0ca30c"
+              },
+              {
+                "value": 300,
+                "color": "#fab219"
+              },
+              {
+                "value": 900,
+                "color": "#d03b3b"
+              }
+            ]
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "noValue": "\u2013",
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "showPercentChange": false
+      },
+      "id": 7
+    },
+    {
+      "type": "row",
+      "title": "Quality over time",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [],
+      "id": 8
+    },
+    {
+      "type": "timeseries",
+      "title": "Degraded sessions by app criticality",
+      "description": "Share of sessions scoring under 70, per minute.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT minute AS time, criticality,\n                   100 * sum(degraded) / sum(sessions) AS degraded_pct\n            FROM netflow.quality_1m\n            WHERE $__timeFilter(minute) AND minute < toStartOfMinute(now()) AND region IN (${region:singlequote}) AND dictGet('netflow.branch', 'primary_provider', branch_id) IN (${provider:singlequote})\n            GROUP BY time, criticality ORDER BY time",
+          "format": 0,
+          "queryType": "timeseries"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisBorderShow": false,
+            "axisSoftMin": 0,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "displayName": "${__field.labels.criticality}"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(.* )?critical$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3987e5"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(.* )?business$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d95926"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(.* )?bulk$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#199e70"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 9
+    },
+    {
+      "type": "timeseries",
+      "title": "p95 response time \u00b7 critical apps",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 7,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT minute AS time, app,\n                   quantilesTDigestMerge(0.5, 0.95)(response_ms)[2] AS p95_ms\n            FROM netflow.quality_1m\n            WHERE $__timeFilter(minute) AND minute < toStartOfMinute(now()) AND criticality = 'critical'\n              AND region IN (${region:singlequote}) AND dictGet('netflow.branch', 'primary_provider', branch_id) IN (${provider:singlequote})\n            GROUP BY time, app ORDER BY time",
+          "format": 0,
+          "queryType": "timeseries"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "lineInterpolation": "smooth",
+            "fillOpacity": 10,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisBorderShow": false,
+            "axisSoftMin": 0,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "displayName": "${__field.labels.app}"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(.* )?card_authorisation$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#3987e5"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(.* )?core_banking$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#d95926"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "^(.* )?swift$"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "#199e70"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 10
+    },
+    {
+      "type": "row",
+      "title": "Where it hurts",
+      "collapsed": false,
+      "gridPos": {
+        "x": 0,
+        "y": 15,
+        "w": 24,
+        "h": 1
+      },
+      "panels": [],
+      "id": 11
+    },
+    {
+      "type": "table",
+      "title": "Branches ranked by degraded share",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 16,
+        "w": 24,
+        "h": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT q.branch_id AS Branch, any(q.region) AS Region,\n                   anyIf(q.provider, q.circuit_role = 'primary') AS Provider,\n                   -- on backup now (last 3 complete minutes), not at any point in the range\n                   if(sumIf(q.sessions, q.circuit_role = 'backup'\n                            AND q.minute >= toStartOfMinute(now()) - INTERVAL 3 MINUTE) > 0,\n                      'backup', 'primary') AS Circuit,\n                   sum(q.sessions) AS Sessions,\n                   round(100 * sum(q.degraded) / sum(q.sessions), 1) AS `Degraded %`,\n                   round(sum(q.quality_sum) / sum(q.sessions), 1) AS Quality,\n                   -- blank when nothing degraded: argMax would pick an arbitrary app\n                   -- degraded sessions summed per app across all rows; blank when none\n                   if(sum(q.degraded) = 0, '', topKWeighted(1)(q.app, q.degraded)[1])\n                       AS `Most affected app`,\n                   round(quantilesTDigestMergeIf(0.5, 0.95)(q.response_ms,\n                         q.app = 'card_authorisation')[2]) AS `Card p95 ms`,\n                   uniqMerge(q.degraded_devices) AS `Devices hit`,\n                   -- first minute the branch crossed the 20% line; blank if it never did\n                   nullIf(minIf(m.minute, m.bad), toDateTime(0, 'UTC')) AS `Degraded since`\n            FROM netflow.quality_1m AS q\n            GLOBAL LEFT JOIN (\n                SELECT branch_id, minute,\n                       sum(degraded) >= 0.2 * sum(sessions) AND sum(sessions) >= 3 AS bad\n                FROM netflow.quality_1m\n                WHERE $__timeFilter(minute) GROUP BY branch_id, minute\n            ) AS m ON m.branch_id = q.branch_id AND m.minute = q.minute\n            WHERE $__timeFilter(q.minute) AND q.minute < toStartOfMinute(now()) AND region IN (${region:singlequote}) AND dictGet('netflow.branch', 'primary_provider', branch_id) IN (${provider:singlequote})\n            GROUP BY q.branch_id HAVING Sessions >= 10\n            -- a branch running on its backup circuit always surfaces, whatever its score\n            ORDER BY Circuit = 'backup' DESC, `Degraded %` DESC, Sessions DESC LIMIT 15",
+          "format": 1,
+          "queryType": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#8e8e8a"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Degraded %"
+            },
+            "properties": [
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic",
+                  "valueDisplayMode": "text"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              },
+              {
+                "id": "max",
+                "value": 100
+              },
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "#0ca30c"
+                    },
+                    {
+                      "value": 5,
+                      "color": "#fab219"
+                    },
+                    {
+                      "value": 20,
+                      "color": "#d03b3b"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Quality"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 90,
+                      "to": 100,
+                      "result": {
+                        "text": "Good",
+                        "color": "#0ca30c"
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 70,
+                      "to": 89.999,
+                      "result": {
+                        "text": "Fair",
+                        "color": "#fab219"
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 50,
+                      "to": 69.999,
+                      "result": {
+                        "text": "Degraded",
+                        "color": "#ec835a"
+                      }
+                    }
+                  },
+                  {
+                    "type": "range",
+                    "options": {
+                      "from": 0,
+                      "to": 49.999,
+                      "result": {
+                        "text": "Poor",
+                        "color": "#d03b3b"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Card p95 ms"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "mode": "absolute",
+                  "steps": [
+                    {
+                      "value": null,
+                      "color": "#0ca30c"
+                    },
+                    {
+                      "value": 300,
+                      "color": "#fab219"
+                    },
+                    {
+                      "value": 900,
+                      "color": "#d03b3b"
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Circuit"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "backup": {
+                        "text": "on backup",
+                        "color": "#ec835a"
+                      },
+                      "primary": {
+                        "text": "primary",
+                        "color": "#8e8e8a"
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Degraded since"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "time:HH:mm"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [],
+        "footer": {
+          "show": false
+        }
+      },
+      "id": 12
+    },
+    {
+      "type": "state-timeline",
+      "title": "Worst branches \u00b7 quality per minute",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 24,
+        "h": 10
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "clickhouse"
+          },
+          "editorType": "sql",
+          "rawSql": "SELECT q.minute AS time, r.label AS branch,\n                       round(sum(q.quality_sum) / sum(q.sessions)) AS quality\n                FROM netflow.quality_1m AS q\n                GLOBAL INNER JOIN (\n                    SELECT branch_id,\n                           concat(leftPad(toString(row_number() OVER (\n                                      ORDER BY sum(degraded) / sum(sessions) DESC)), 2, '0'),\n                                  ' \u00b7 ', branch_id) AS label\n                    FROM netflow.quality_1m\n                    WHERE $__timeFilter(minute) AND minute < toStartOfMinute(now())\n                      AND region IN (${region:singlequote}) AND dictGet('netflow.branch', 'primary_provider', branch_id) IN (${provider:singlequote})\n                    GROUP BY branch_id HAVING sum(sessions) >= 10\n                    ORDER BY sum(degraded) / sum(sessions) DESC LIMIT 10\n                ) AS r ON r.branch_id = q.branch_id\n                WHERE $__timeFilter(q.minute) AND q.minute < toStartOfMinute(now())\n                GROUP BY time, branch ORDER BY time, branch",
+          "format": 0,
+          "queryType": "timeseries"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            {
+              "type": "range",
+              "options": {
+                "from": 90,
+                "to": 100,
+                "result": {
+                  "text": "Good",
+                  "color": "#0ca30c"
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 70,
+                "to": 89.999,
+                "result": {
+                  "text": "Fair",
+                  "color": "#fab219"
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 50,
+                "to": 69.999,
+                "result": {
+                  "text": "Degraded",
+                  "color": "#ec835a"
+                }
+              }
+            },
+            {
+              "type": "range",
+              "options": {
+                "from": 0,
+                "to": 49.999,
+                "result": {
+                  "text": "Poor",
+                  "color": "#d03b3b"
+                }
+              }
+            }
+          ],
+          "displayName": "${__field.labels.branch}",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "value": null,
+                "color": "#d03b3b"
+              },
+              {
+                "value": 50,
+                "color": "#ec835a"
+              },
+              {
+                "value": 70,
+                "color": "#fab219"
+              },
+              {
+                "value": 90,
+                "color": "#0ca30c"
+              }
+            ]
+          },
+          "custom": {
+            "lineWidth": 0,
+            "fillOpacity": 85
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "showValue": "never",
+        "mergeValues": true,
+        "rowHeight": 0.8,
+        "alignValue": "left",
+        "legend": {
+          "showLegend": true,
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "id": 13
+    }
+  ]
+}

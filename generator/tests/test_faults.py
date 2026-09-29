@@ -20,6 +20,10 @@ T0 = 1_000_000_000
         FaultSpec("slow", "circuit:CKT-1001"),
         FaultSpec("degrade", "server:cas-01"),
         FaultSpec("degrade", "circuit:CKT-1001", loss=0.9),
+        FaultSpec("degrade", "circuit:CKT-1001", latency_ms=-10),
+        FaultSpec("degrade", "circuit:CKT-1001", latency_ms=float("nan")),
+        FaultSpec("slow", "server:cas-01", server_factor=float("inf")),
+        FaultSpec("slow", "server:cas-01", server_factor=0.5),
     ],
 )
 def test_invalid_faults_are_rejected(registry: FaultRegistry, spec: FaultSpec) -> None:

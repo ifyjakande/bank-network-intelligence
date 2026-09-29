@@ -1,6 +1,6 @@
 """Fault injection.
 
-A fault targets one element (`circuit:CKT-1035`, `pop:SAV-EAST`, `server:cas-02`...) and
+A fault targets one element (`circuit:CKT-1035`, `pop:SAV-EST`, `server:cas-02`...) and
 changes the physics of every session whose path crosses it. Each start and end is also
 published as a ground-truth event, so localisation queries can be scored against it.
 """
@@ -8,6 +8,7 @@ published as a ground-truth event, so localisation queries can be scored against
 from __future__ import annotations
 
 import itertools
+import math
 import threading
 from dataclasses import asdict, dataclass, field
 
@@ -101,10 +102,15 @@ def validate(estate: Estate, spec: FaultSpec) -> None:
         raise ValueError("'slow' only applies to servers or apps")
     if spec.kind == "degrade" and ttype not in NETWORK_TARGETS:
         raise ValueError("'degrade' applies to network elements; use 'slow' for servers")
+    # the API takes JSON, where Infinity and NaN parse: reject them before the physics does
+    if not all(math.isfinite(v) for v in (spec.latency_ms, spec.loss, spec.server_factor)):
+        raise ValueError("latency_ms, loss and server_factor must be finite numbers")
+    if not 0 <= spec.latency_ms <= 10_000:
+        raise ValueError("latency_ms must be in [0, 10000]")
     if not 0 <= spec.loss < 0.5:
         raise ValueError("loss must be in [0, 0.5)")
-    if spec.server_factor < 1:
-        raise ValueError("server_factor must be >= 1")
+    if not 1 <= spec.server_factor <= 100:
+        raise ValueError("server_factor must be in [1, 100]")
 
 
 class FaultRegistry:
