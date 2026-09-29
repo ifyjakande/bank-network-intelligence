@@ -1,0 +1,11 @@
+app,response_good_ms,response_bad_ms,rtt_good_ms,rtt_bad_ms,retrans_good_pct,retrans_bad_pct
+core_banking,150,600,40,70,0.5,2.0
+card_authorisation,300,900,40,70,0.5,2.0
+atm_management,300,1500,40,70,0.5,2.0
+swift,500,2000,40,70,0.5,2.0
+file_share,150,800,40,70,0.5,2.0
+cctv_upload,200,1000,60,150,1.0,3.0
+email,400,1500,60,150,1.0,3.0
+teams_media,300,1000,60,150,1.0,3.0
+software_updates,500,2000,80,200,1.0,4.0
+guest_internet,500,2000,80,200,1.0,4.0

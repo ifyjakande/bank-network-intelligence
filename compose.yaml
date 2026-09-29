@@ -1,0 +1,250 @@
+# Local and single-host stack. Credentials come from .env.stack (scripts/gen-secrets.sh).
+#
+#   probes (netgen) -> kafka -> clickhouse (2 shards x 2 replicas) -> stitcher -> rollups
+#                                  ^ dictionaries <- postgres inventory
+
+name: ${COMPOSE_PROJECT_NAME:-bni}
+
+x-clickhouse: &clickhouse
+  image: clickhouse/clickhouse-server:26.8
+  restart: unless-stopped
+  ulimits:
+    nofile: { soft: 262144, hard: 262144 }
+  volumes:
+    - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+    - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+  healthcheck:
+    test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping || exit 1"]
+    interval: 5s
+    timeout: 3s
+    retries: 30
+  depends_on:
+    keeper1: { condition: service_healthy }
+    keeper2: { condition: service_healthy }
+    keeper3: { condition: service_healthy }
+  deploy:
+    resources:
+      limits: { memory: 1300m }
+
+x-clickhouse-env: &clickhouse-env
+  CLICKHOUSE_SKIP_USER_SETUP: "1"
+  CH_MAX_SERVER_MEMORY: "1000000000"
+  CH_CLUSTER_SECRET: ${CH_CLUSTER_SECRET:?run scripts/gen-secrets.sh}
+  CH_ADMIN_PASSWORD_SHA256: ${CH_ADMIN_PASSWORD_SHA256:?}
+  CH_ETL_PASSWORD_SHA256: ${CH_ETL_PASSWORD_SHA256:?}
+  CH_GRAFANA_PASSWORD_SHA256: ${CH_GRAFANA_PASSWORD_SHA256:?}
+  PG_CH_READER_PASSWORD: ${PG_CH_READER_PASSWORD:?}
+
+x-keeper: &keeper
+  image: clickhouse/clickhouse-keeper:26.8
+  restart: unless-stopped
+  volumes:
+    - ./clickhouse/keeper/keeper.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
+  healthcheck:
+    test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9181; printf ruok >&3; read -t 2 r <&3; [ \"$$r\" = imok ]'"]
+    interval: 5s
+    timeout: 3s
+    retries: 30
+  deploy:
+    resources:
+      limits: { memory: 256m }
+
+x-etl: &etl
+  build:
+    context: .
+    dockerfile: etl/Dockerfile
+  image: bni/flowetl:dev
+  environment: &etl-env
+    FLOWETL_CH_PASSWORD: ${CH_ETL_PASSWORD:?}
+    FLOWETL_CH_ADMIN_PASSWORD: ${CH_ADMIN_PASSWORD:?}
+    FLOWETL_PG_DSN: postgresql://inventory_loader:${PG_LOADER_PASSWORD:?}@postgres:5432/bank
+
+services:
+  kafka:
+    image: apache/kafka:4.3.1
+    restart: unless-stopped
+    environment:
+      CLUSTER_ID: EkD4TlxFXPmTvsnAV5gpJw
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,HOST://:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,HOST://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      # single broker: replication factors of 1. production runs 3 brokers, RF 3, min ISR 2
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    ports:
+      - "127.0.0.1:29092:29092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+    deploy:
+      resources:
+        limits: { memory: 1g }
+
+  kafka-init:
+    image: apache/kafka:4.3.1
+    depends_on:
+      kafka: { condition: service_healthy }
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        k=/opt/kafka/bin/kafka-topics.sh
+        $$k --bootstrap-server kafka:9092 --create --if-not-exists --topic netflow.halfflows.v1 \
+            --partitions 8 --config retention.ms=86400000 --config compression.type=producer
+        $$k --bootstrap-server kafka:9092 --create --if-not-exists --topic netflow.faults.v1 \
+            --partitions 1 --config retention.ms=2592000000
+        $$k --bootstrap-server kafka:9092 --describe --topic netflow.halfflows.v1 | head -1
+
+  keeper1:
+    <<: *keeper
+    environment: { KEEPER_ID: "1" }
+    volumes:
+      - ./clickhouse/keeper/keeper.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
+      - keeper1-data:/var/lib/clickhouse
+  keeper2:
+    <<: *keeper
+    environment: { KEEPER_ID: "2" }
+    volumes:
+      - ./clickhouse/keeper/keeper.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
+      - keeper2-data:/var/lib/clickhouse
+  keeper3:
+    <<: *keeper
+    environment: { KEEPER_ID: "3" }
+    volumes:
+      - ./clickhouse/keeper/keeper.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
+      - keeper3-data:/var/lib/clickhouse
+
+  ch-s1r1:
+    <<: *clickhouse
+    hostname: ch-s1r1
+    environment: { <<: *clickhouse-env, CH_SHARD: "01", CH_REPLICA: ch-s1r1 }
+    volumes:
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+      - ch-s1r1-data:/var/lib/clickhouse
+    ports:
+      - "127.0.0.1:8123:8123"
+  ch-s1r2:
+    <<: *clickhouse
+    hostname: ch-s1r2
+    environment: { <<: *clickhouse-env, CH_SHARD: "01", CH_REPLICA: ch-s1r2 }
+    volumes:
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+      - ch-s1r2-data:/var/lib/clickhouse
+  ch-s2r1:
+    <<: *clickhouse
+    hostname: ch-s2r1
+    environment: { <<: *clickhouse-env, CH_SHARD: "02", CH_REPLICA: ch-s2r1 }
+    volumes:
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+      - ch-s2r1-data:/var/lib/clickhouse
+  ch-s2r2:
+    <<: *clickhouse
+    hostname: ch-s2r2
+    environment: { <<: *clickhouse-env, CH_SHARD: "02", CH_REPLICA: ch-s2r2 }
+    volumes:
+      - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+      - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
+      - ch-s2r2-data:/var/lib/clickhouse
+
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: bank
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      PG_CH_READER_PASSWORD: ${PG_CH_READER_PASSWORD:?}
+      PG_LOADER_PASSWORD: ${PG_LOADER_PASSWORD:?}
+    volumes:
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d bank"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    deploy:
+      resources:
+        limits: { memory: 256m }
+
+  # --- one-shot jobs, in dependency order ---
+  inventory-export:
+    build: ./generator
+    image: bni/netgen:dev
+    command: ["inventory", "--out", "/inventory"]
+    volumes:
+      - inventory:/inventory
+
+  inventory-load:
+    <<: *etl
+    command: ["load-inventory"]
+    volumes:
+      - inventory:/inventory:ro
+    depends_on:
+      postgres: { condition: service_healthy }
+      inventory-export: { condition: service_completed_successfully }
+
+  migrate:
+    <<: *etl
+    command: ["migrate"]
+    depends_on:
+      ch-s1r1: { condition: service_healthy }
+      ch-s1r2: { condition: service_healthy }
+      ch-s2r1: { condition: service_healthy }
+      ch-s2r2: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+      inventory-load: { condition: service_completed_successfully }
+
+  # --- long-running pipeline ---
+  generator:
+    image: bni/netgen:dev
+    restart: unless-stopped
+    environment:
+      NETGEN_KAFKA_BOOTSTRAP: kafka:9092
+      NETGEN_LOAD_FACTOR: ${NETGEN_LOAD_FACTOR:-5}
+    ports:
+      - "127.0.0.1:8088:8088"
+    depends_on:
+      kafka-init: { condition: service_completed_successfully }
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits: { memory: 512m }
+
+  stitcher:
+    <<: *etl
+    restart: unless-stopped
+    command: ["stitch"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    deploy:
+      resources:
+        limits: { memory: 256m }
+
+volumes:
+  kafka-data:
+  keeper1-data:
+  keeper2-data:
+  keeper3-data:
+  ch-s1r1-data:
+  ch-s1r2-data:
+  ch-s2r1-data:
+  ch-s2r2-data:
+  postgres-data:
+  inventory:

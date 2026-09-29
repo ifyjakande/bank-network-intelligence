@@ -1,0 +1,38 @@
+<clickhouse>
+    <!-- 2 shards x 2 replicas for the data; halves of a session land on the same shard -->
+    <remote_servers replace="true">
+        <netflow>
+            <secret from_env="CH_CLUSTER_SECRET"/>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica><host>ch-s1r1</host><port>9000</port></replica>
+                <replica><host>ch-s1r2</host><port>9000</port></replica>
+            </shard>
+            <shard>
+                <internal_replication>true</internal_replication>
+                <replica><host>ch-s2r1</host><port>9000</port></replica>
+                <replica><host>ch-s2r2</host><port>9000</port></replica>
+            </shard>
+        </netflow>
+    </remote_servers>
+
+    <macros>
+        <cluster>netflow</cluster>
+        <shard from_env="CH_SHARD"/>
+        <replica from_env="CH_REPLICA"/>
+    </macros>
+
+    <zookeeper>
+        <node><host>keeper1</host><port>9181</port></node>
+        <node><host>keeper2</host><port>9181</port></node>
+        <node><host>keeper3</host><port>9181</port></node>
+        <session_timeout_ms>30000</session_timeout_ms>
+    </zookeeper>
+
+    <distributed_ddl>
+        <path>/clickhouse/task_queue/ddl</path>
+    </distributed_ddl>
+
+    <default_replica_path>/clickhouse/tables/{shard}/{database}/{table}</default_replica_path>
+    <default_replica_name>{replica}</default_replica_name>
+</clickhouse>

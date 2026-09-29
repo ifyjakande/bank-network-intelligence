@@ -1,0 +1,7 @@
+**
+!etl/pyproject.toml
+!etl/uv.lock
+!etl/src/**
+!etl/seeds/**
+!clickhouse/migrations/**
+**/__pycache__
