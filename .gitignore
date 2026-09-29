@@ -1,0 +1,21 @@
+.env
+.env.*
+*.tfvars
+*.tfstate
+*.tfstate.*
+.terraform/
+credentials*
+*.pem
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# local scratch
+*.jsonl
+.DS_Store
+.claude/
