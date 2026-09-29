@@ -13,7 +13,7 @@ from .config import Settings
 from .demand import Demand
 from .engine import Engine
 from .inventory import write_inventory
-from .sinks import make_sink
+from .sinks import SinkStalled, make_sink
 from .topology import Estate, build_estate
 
 
@@ -76,6 +76,9 @@ def main(argv: list[str] | None = None) -> None:
                 file=log,
             )
             engine.run_live()
+    except SinkStalled as exc:
+        # exit non-zero: Docker restarts the generator with a fresh producer
+        raise SystemExit(f"netgen: {exc}; exiting so the container restarts") from None
     finally:
         sink.close()
 
