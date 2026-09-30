@@ -102,7 +102,7 @@ def render(sql: str, values: dict[str, list[str]]) -> str:
 
 def modes(options: dict[str, list[str]]) -> list[tuple[str, dict[str, list[str]]]]:
     """All selected (Grafana expands it), one value, and several values, per variable."""
-    out = [("all", {k: v for k, v in options.items()})]
+    out = [("all", dict(options))]
     for name, vals in options.items():
         out.append((f"{name}=one", {**options, name: vals[:1]}))
         if len(vals) > 1:

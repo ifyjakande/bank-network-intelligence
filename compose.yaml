@@ -10,9 +10,6 @@ x-clickhouse: &clickhouse
   restart: unless-stopped
   ulimits:
     nofile: { soft: 262144, hard: 262144 }
-  volumes:
-    - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
-    - ./clickhouse/users.d:/etc/clickhouse-server/users.d:ro
   healthcheck:
     test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8123/ping || exit 1"]
     interval: 5s
@@ -40,8 +37,6 @@ x-clickhouse-env: &clickhouse-env
 x-keeper: &keeper
   image: clickhouse/clickhouse-keeper:26.8
   restart: unless-stopped
-  volumes:
-    - ./clickhouse/keeper/keeper.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
   healthcheck:
     test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9181; printf ruok >&3; read -t 2 r <&3; [ \"$$r\" = imok ]'"]
     interval: 5s
@@ -58,7 +53,7 @@ x-etl: &etl
     context: .
     dockerfile: etl/Dockerfile
   image: bni/flowetl:dev
-  environment: &etl-env
+  environment:
     FLOWETL_CH_PASSWORD: ${CH_ETL_PASSWORD:?}
     FLOWETL_CH_ADMIN_PASSWORD: ${CH_ADMIN_PASSWORD:?}
     FLOWETL_PG_DSN: postgresql://inventory_loader:${PG_LOADER_PASSWORD:?}@postgres:5432/bank

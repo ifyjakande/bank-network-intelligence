@@ -8,6 +8,11 @@ which provider is responsible.
 Live demo: [netdemo.ifeakande.com](https://netdemo.ifeakande.com), read-only, no login.
 It runs on one EC2 instance and is up while the project is being reviewed.
 
+![Estate dashboard during an injected incident: reachability 100%, 18 branches degraded](docs/media/estate.jpg)
+
+*During an injected congestion fault at a provider PoP: ping-level reachability stays at
+100% while 18 branches are degraded.*
+
 ## Why
 
 Branches are rarely down. More often they are degraded: the circuit is up and ping is
@@ -42,16 +47,18 @@ flowchart LR
 | ClickHouse 26.8 | 2 shards × 2 replicas, 3 Keeper nodes |
 | `etl/` | Schema migrations, inventory load, stitching |
 | Postgres 18 | Inventory and SLA targets, read by ClickHouse dictionaries |
-| Grafana 13 | 4 dashboards, 9 alert rules |
+| Grafana 13 + ClickHouse plugin 4.21 | 4 dashboards, 9 alert rules |
 
 ## Run it
 
 ```bash
 make up      # creates .env.stack with random credentials, builds, starts
+make ps      # service health; make logs s=stitcher follows one service
 make test    # unit tests
 make lint    # ruff, mypy --strict
-make bench   # benchmarks on a separate ClickHouse server
-make nuke    # remove everything
+make bench   # benchmarks on a separate ClickHouse server (pauses the stack; ROWS=, ARGS=)
+make down    # stop, keep the data
+make nuke    # stop and delete the data volumes
 ```
 
 Dashboards: [estate](http://localhost:3000/d/bank-estate),
@@ -75,8 +82,8 @@ ground truth so localisation can be checked against it.
 
 ### Stitching
 
-Routing is asymmetric: the two directions of a session pass different probes, so RTT and
-response time only exist after both halves are joined.
+Routing is often asymmetric: the two directions of a session can pass different probes,
+so RTT and response time only exist after both halves are joined.
 
 ```
 server RTT    = synack (s2c) - syn    (c2s)
@@ -101,7 +108,10 @@ response time = first response (s2c) - first request (c2s)
 Postgres holds branches, circuits, devices, servers and SLA targets. ClickHouse
 dictionaries read them and every session is enriched in the stitch query.
 
-- Quality (0 to 100): response time 40%, WAN RTT 40%, loss 20%, against the app's targets.
+- Quality (0 to 100): response time 40%, WAN RTT 40%, retransmissions 20%, against the
+  app's targets. A component that cannot be measured (no handshake in UDP) drops out and
+  the rest are re-weighted; a TCP session with no return traffic scores 0. Apps without a
+  row in the SLA table are scored against generic targets.
 - `degraded`: quality below 70.
 - `net_degraded`: the network path failed (RTT, loss or no return traffic). Used for
   provider SLA; a slow server does not count.
@@ -111,8 +121,8 @@ dictionaries read them and every session is enriched in the stitch query.
 A rollup maps each session onto every element on its path (switch, router, circuit, PoP,
 provider, gateway, server, app). Each element is scored by precision (share of its
 sessions that are degraded) and coverage (share of all degraded sessions it carries).
-The highest score is the likely cause. Elements that carry the same sessions, such as a
-router and its circuit, tie.
+The score is their harmonic mean, and the highest is the likely cause. Elements that
+carry the same sessions, such as a router and its circuit, tie.
 
 ### Ingest safety
 
@@ -145,23 +155,23 @@ Ingest at 10× load (5 minutes, live cluster):
 | Active parts per partition | 4 at most |
 
 Ingest ceiling on the deployed instance (t4g.xlarge, 4 vCPU, whole stack on one box),
-load stepped up through the generator's control API:
+load stepped up through the generator's control API during simulated business hours:
 
-| Load | Peak ingest | Stitch lag | Replica delay |
+| Load | Ingest | Stitch lag | Replica delay |
 |---|---|---|---|
-| 100× | 1,340 rows/s | 19 to 25 s | 0 s |
-| 200× | 2,860 rows/s | 19 to 26 s | 0 s |
-| 400×, held 5 minutes | 7,900 rows/s | 20 to 35 s | 0 s |
-| Kafka backlog drain | 15,000 rows/s | | |
+| 10× | 2,400 rows/s | 16 to 18 s | 0 s |
+| 20× | 4,800 rows/s | 20 to 27 s | 0 s |
+| 30× | 7,200 rows/s | 17 to 24 s | 0 s |
+| 40×, held 5 minutes | 9,500 rows/s (peak 10,300) | 21 to 44 s | 0 s |
 
-The pipeline was not saturated at 400×, the highest step run. The backlog figure is the
-rate ClickHouse drained a Kafka backlog after a stall, so it is a burst rate.
+The pipeline was not saturated at 40×: stitch lag stayed bounded and replicas stayed in
+sync. The generator is what stops there; above 40× at peak hours it outgrows its 512 MB.
 
 Tuning notes:
 
 - The branch-first sort key also compresses 13% better than time-first.
 - Rollups need density: at 2M rows the rollup was nearly as large as the raw table; at
-  100M it is 5.3× smaller.
+  100M it has 5.3× fewer rows and is 6.7× smaller on disk.
 - Raising the Kafka flush interval from 2 s to 7.5 s cut time spent writing parts from
   440 s to 3.5 s per 150 s.
 - The stitcher only loops without waiting when it has a backlog. This cut its CPU by 5.7×.
@@ -169,11 +179,14 @@ Tuning notes:
   measurements.
 - The stitcher looked up each window's sessions by `community_id`. Community IDs are
   hashes, so ~30k touched sessions hit nearly every granule and each run read the whole
-  day: 105 thousand rows per run at start-up, 27.6 million (11 s) twelve hours later on the
-  live instance. The work queue now carries `first_seen`, and half-flows have a projection
-  ordered by it, so a run reads back only to its oldest touched session (sessions last up
-  to ~45 minutes). Locally: 19.3 million rows and 3.1 s per run down to 6.6 million and
-  0.74 s, and the cost no longer grows with the table.
+  day: 105 thousand rows per run at start-up, 27.6 million (11 s) twelve hours later on
+  the live instance and 34.7 million (15 s) an hour after that. The work queue now carries `first_seen`, and
+  half-flows have a projection ordered by it, so a run reads back only to its oldest
+  touched session (sessions last up to ~45 minutes). Live: 8.7 million rows and 2.5 s per
+  run, half the memory, and the cost no longer grows with the table.
+- `ALTER`s that add a projection validate against ClickHouse's built-in background-pool
+  reserves (up to 25 free slots), whatever the server config says. A 4-thread pool with
+  8 slots refused them; it now has 28 slots on the same 4 threads.
 - Keeper at 256 MB sat at 225 MB resident on arm64, crossed its soft limit under load
   and refused requests. Every replicated table went read-only for 2.5 minutes. At
   512 MB the same run shows no refusals.
@@ -183,12 +196,25 @@ Tuning notes:
 Dashboards and alert rules are generated by `grafana/build.py`. CI fails if the committed
 JSON differs from the source.
 
-- Estate: reachability next to quality, degradation by criticality, ranked branches,
-  quality timeline.
-- Fault localisation: likely cause, ranked candidates, injected incidents.
-- Provider SLA: degraded and outage minutes charged to the branch's primary circuit. Loss
-  on a bank switch is excluded when another switch at the branch is healthy.
-- Pipeline: ingest rate, stitch lag, replica delay, quarantined records, storage.
+**Estate**: reachability next to quality, degradation by criticality, ranked branches,
+quality timeline. Filtered here to one provider, SAV: the worst branches are all in its
+East region.
+
+![Estate dashboard filtered to provider SAV](docs/media/estate-sav.jpg)
+
+**Fault localisation**: likely cause, ranked candidates, injected incidents. It names the
+congested PoP, SAV-EST, which the ground-truth table confirms.
+
+![Fault localisation naming pop SAV-EST](docs/media/localisation.jpg)
+
+**Provider SLA**: degraded and outage minutes charged to the branch's primary circuit. Loss
+on a bank switch is excluded when another switch at the branch is healthy.
+
+![Provider SLA evidence filtered to SAV](docs/media/sla.jpg)
+
+**Pipeline**: ingest rate, stitch lag, replica delay, quarantined records, storage.
+
+![Pipeline health](docs/media/pipeline.jpg)
 
 Alert rules:
 
@@ -200,14 +226,17 @@ Alert rules:
 | Branch running on backup circuit | Records quarantined at ingest |
 | | Ingestion stopped |
 
-Alerts target causes. A slow central server raises one alert, not one per branch. Each
-rule was tested by injecting the failure and confirming it fired and cleared.
+Alerts target causes. A slow central server raises alerts about the server, not one per
+branch. Each rule was tested by injecting the failure and confirming it fired and cleared.
+
+![Alert rules firing during the injected incident](docs/media/alerts.jpg)
 
 ## Tests
 
 - 53 unit tests: generator, fault validation, fault ids, control API, Kafka stall handling,
   migrations, stitch windows.
-- 20 integration tests against the running stack, in CI:
+- 20 integration tests against the running stack, in CI (locally, after `make up`:
+  `set -a; . ./.env.stack; set +a; cd etl && uv run pytest -m integration`):
   - replicas agree; no duplicate or lost sessions; every session enriched
   - an injected fault is localised to the right element
   - invalid records are quarantined and never reach the tables
@@ -222,14 +251,21 @@ rule was tested by injecting the failure and confirming it fired and cleared.
 - Secrets live in `.env.stack` (gitignored). CI runs gitleaks on the full history.
 - Local ports bind to `127.0.0.1`. The deployed instance has no inbound ports; Grafana is
   published through a Cloudflare Tunnel and shell access is through SSM.
-- No long-lived cloud keys: Terraform Cloud and GitHub Actions get short-lived AWS
-  credentials through OIDC.
-- CI actions are pinned to commit SHAs; images are scanned before publishing.
+- No stored AWS keys: Terraform Cloud and GitHub Actions get short-lived credentials
+  through OIDC. Plans (including speculative plans on pull requests) use a read-only role;
+  only applies get the role that builds. The one-off keys used for the bootstrap are removed
+  straight after. Cloudflare and GitHub tokens are sensitive Terraform Cloud variables.
+- Deploys run only for pushes to `main` in this repository, and the instance refuses any
+  commit that is not on `main`.
+- CI actions are pinned to commit SHAs. Dependencies, Dockerfiles, compose and Terraform
+  are scanned on every pull request; published images are scanned again before the push.
 
 ## Deployment
 
-Terraform in `infra/`, run by Terraform Cloud, built from terraform-aws-modules plus the
-official Cloudflare provider for the tunnel.
+Terraform in `infra/`, run by Terraform Cloud. AWS resources come from
+terraform-aws-modules (the budget from cloudposse's module); the tunnel, DNS record and
+deploy key use the official Cloudflare, GitHub and TLS providers directly.
+`infra/tfc.py` creates the workspaces and sets their variables through the TFC API.
 
 - `infra/bootstrap`: OIDC trust for Terraform Cloud and GitHub Actions, applied once.
 - `infra/live`: VPC with one public subnet and no NAT gateway, a security group with no
@@ -237,10 +273,11 @@ official Cloudflare provider for the tunnel.
   and IMDSv2, the Cloudflare Tunnel and DNS record, a read-only deploy key for the repo,
   and a $30 monthly budget alert.
 - First boot installs Docker and cloudflared from signed package repos and pinned,
-  checksum-verified Compose and Buildx, clones the repo and runs `make up`. The tunnel token and deploy key come from SSM Parameter Store, not user data.
+  checksum-verified Compose and Buildx, clones the repo and runs `make up`. The tunnel
+  token and deploy key come from SSM Parameter Store, not user data.
 
 A merge to `main` runs CI, then the deploy workflow moves the instance to the new commit
-over SSM. `terraform destroy` on the `bni-demo` workspace removes everything, including the
+over SSM (changes to docs only skip both). `terraform destroy` on the `bni-demo` workspace removes everything, including the
 DNS record and the deploy key.
 
 Checked on the live instance: every dashboard query and alert rule through the public
@@ -254,6 +291,8 @@ stop and start of the instance (site back in about a minute, no manual steps).
   each server runs on its own machine, spread across availability zones. The schema and
   code stay the same; `clickhouse/config.d/cluster.xml` already addresses servers by
   hostname.
+- The demo is hosted on AWS so it can be viewed. Nothing in the stack depends on a cloud
+  service: the same compose stack runs on premises, next to the probes.
 - Kafka runs as one broker. Production would use three with replication factor 3.
 - Traffic is synthetic. It models RTT, loss, retransmission timeouts, asymmetric routing,
   port reuse, and late and duplicate delivery.
@@ -273,6 +312,9 @@ clickhouse/  cluster config, users, migrations, localisation query
 postgres/    inventory schema and views
 grafana/     dashboards and alerts as code
 bench/       benchmark harness and results
-infra/       terraform: bootstrap (OIDC trust) and live (the demo instance)
+infra/       terraform: bootstrap (OIDC trust) and live (the demo instance); tfc.py
 scripts/     secret generation, deploy
+docs/media/  screenshots
+.github/     CI, deploy, dependabot
+compose.yaml the whole stack; Makefile wraps it
 ```

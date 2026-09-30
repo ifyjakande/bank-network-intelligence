@@ -4,7 +4,7 @@
     python3 infra/tfc.py connect-vcs                 # link bni-demo to the repo (main)
     python3 infra/tfc.py bootstrap-keys              # one-off AWS keys for the bootstrap run
     python3 infra/tfc.py drop-bootstrap-keys         # remove them once bootstrap is applied
-    python3 infra/tfc.py live-vars ROLE_ARN          # OIDC role + inputs for bni-demo
+    python3 infra/tfc.py live-vars APPLY_ARN PLAN_ARN  # OIDC roles + inputs for bni-demo
 
 Reads the TFC token from ~/.terraform.d/credentials.tfrc.json and everything else from
 the environment (`set -a; . ./.env; set +a`): AWS keys for bootstrap-keys;
@@ -145,10 +145,16 @@ def drop_bootstrap_keys() -> None:
         delete_var(ws, key)
 
 
-def live_vars(role_arn: str) -> None:
+def live_vars(apply_role_arn: str, plan_role_arn: str) -> None:
+    missing = [k for k in ("CLOUDFLARE_ACCOUNT_ID", "BUDGET_EMAIL") if not os.environ.get(k)]
+    if missing:
+        raise SystemExit(f"{', '.join(missing)} not set in the environment")
     ws = workspace_id("bni-demo")
     upsert_var(ws, "TFC_AWS_PROVIDER_AUTH", "true", "env", sensitive=False)
-    upsert_var(ws, "TFC_AWS_RUN_ROLE_ARN", role_arn, "env", sensitive=False)
+    # plans (speculative ones on pull requests too) get a read-only role, applies the builder
+    upsert_var(ws, "TFC_AWS_PLAN_ROLE_ARN", plan_role_arn, "env", sensitive=False)
+    upsert_var(ws, "TFC_AWS_APPLY_ROLE_ARN", apply_role_arn, "env", sensitive=False)
+    delete_var(ws, "TFC_AWS_RUN_ROLE_ARN")
     upsert_var(
         ws,
         "cloudflare_account_id",
@@ -171,8 +177,8 @@ if __name__ == "__main__":
         "bootstrap-keys": bootstrap_keys,
         "drop-bootstrap-keys": drop_bootstrap_keys,
     }
-    if len(sys.argv) == 3 and sys.argv[1] == "live-vars":
-        live_vars(sys.argv[2])
+    if len(sys.argv) == 4 and sys.argv[1] == "live-vars":
+        live_vars(sys.argv[2], sys.argv[3])
     elif len(sys.argv) == 2 and sys.argv[1] in commands:
         commands[sys.argv[1]]()
     else:

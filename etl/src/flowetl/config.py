@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # re-examine each window this many seconds later, before the idle-timeout sweep
     stitch_recheck_offsets_s: list[int] = Field(default_factory=lambda: [60, 300])
     stitch_sync_timeout_s: int = Field(10, gt=0)  # bounded wait for replica catch-up
-    # longest session we stitch; lookups are by id, so this only bounds partition pruning
+    # longest session we stitch: the furthest back a run's first_seen bound may reach
     stitch_lookback_s: int = Field(86400, gt=0)
     stitch_pair_tolerance_ms: int = Field(5000, gt=0)  # max c2s -> s2c first-seen gap
     stitch_probe_skew_ms: int = Field(50, ge=0)  # clock skew allowed between two probes

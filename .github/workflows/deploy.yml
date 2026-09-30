@@ -21,9 +21,14 @@ env:
 
 jobs:
   deploy:
+    # workflow_run's branch filter matches a fork's branch called main too, and a fork's PR runs
+    # its own ci.yml: only a successful push to this repository (or a manual run) deploys
     if: >
       vars.AWS_DEPLOY_ROLE_ARN != '' &&
-      (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success')
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
@@ -63,6 +68,4 @@ jobs:
           done
           aws ssm get-command-invocation --command-id "$cmd" --instance-id "$INSTANCE" \
             --query '{status: Status, out: StandardOutputContent, err: StandardErrorContent}'
-          status=$(aws ssm get-command-invocation --command-id "$cmd" --instance-id "$INSTANCE" \
-            --query Status --output text)
           test "$status" = "Success"

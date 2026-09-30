@@ -193,6 +193,7 @@ def _delete(path: str) -> None:
 
 def test_injected_fault_is_localised(ch: Client) -> None:
     target = "server:cas-02"
+    expected = tuple(target.split(":", 1))
     fault = _post(
         "/faults",
         {
@@ -213,9 +214,9 @@ def test_injected_fault_is_localised(ch: Client) -> None:
             if rows:
                 best = rows[0][6]
                 top = [(r[0], r[1]) for r in rows if r[6] == best]
-                if ("server", "cas-02") in top:
+                if expected in top:
                     break
-        assert ("server", "cas-02") in top, f"localisation said {top}"
+        assert expected in top, f"localisation said {top}"
         truth = scalar(
             ch,
             "SELECT count() FROM netflow.fault_events WHERE fault_id = {f:String}",

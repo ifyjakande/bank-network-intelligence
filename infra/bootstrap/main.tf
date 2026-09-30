@@ -1,5 +1,6 @@
 # One-time trust between Terraform Cloud / GitHub Actions and AWS, so neither needs stored
-# keys. Run from a laptop with AWS credentials (`terraform apply`); state lives in TFC.
+# keys. Applied through the bni-bootstrap workspace with one-off AWS keys that are removed
+# straight after (infra/tfc.py bootstrap-keys / drop-bootstrap-keys); state lives in TFC.
 # Everything is built from terraform-aws-modules; destroying this removes the trust.
 
 terraform {
@@ -90,18 +91,68 @@ module "tfc_live_role" {
 
   name            = "bni-tfc-live"
   use_name_prefix = false
-  description     = "Assumed by Terraform Cloud runs of the bni-demo workspace"
+  description     = "Assumed by Terraform Cloud applies of the bni-demo workspace"
 
+  # applies only: they need to build, and only the workspace owner can confirm one
   enable_oidc        = true
   oidc_provider_urls = [local.tfc_host]
   oidc_audiences     = ["aws.workload.identity"]
   oidc_wildcard_subjects = [
-    "organization:${var.tfc_organization}:project:*:workspace:${var.tfc_live_workspace}:run_phase:*",
+    "organization:${var.tfc_organization}:project:*:workspace:${var.tfc_live_workspace}:run_phase:apply",
   ]
 
   policies = {
     PowerUser = "arn:aws:iam::aws:policy/PowerUserAccess"
     IamScope  = module.tfc_live_iam_scope.arn
+  }
+}
+
+# Plans (including speculative plans on pull requests) only read. A separate role keeps the
+# apply role's power, which could create and escalate bni-* roles, away from any plan.
+module "tfc_plan_role" {
+  source  = "terraform-aws-modules/iam/aws//modules/iam-role"
+  version = "6.8.2"
+
+  name            = "bni-tfc-plan"
+  use_name_prefix = false
+  description     = "Assumed by Terraform Cloud plans of the bni-demo workspace; read only"
+
+  enable_oidc        = true
+  oidc_provider_urls = [local.tfc_host]
+  oidc_audiences     = ["aws.workload.identity"]
+  oidc_wildcard_subjects = [
+    "organization:${var.tfc_organization}:project:*:workspace:${var.tfc_live_workspace}:run_phase:plan",
+  ]
+
+  policies = {
+    ReadOnly = "arn:aws:iam::aws:policy/ReadOnlyAccess"
+  }
+
+  create_inline_policy = true
+  inline_policy_permissions = {
+    # refreshing the demo's SecureString parameters needs their values, and only theirs
+    DecryptOwnParameters = {
+      actions   = ["kms:Decrypt"]
+      resources = ["*"]
+      condition = [
+        {
+          test     = "StringEquals"
+          variable = "kms:ViaService"
+          values   = ["ssm.${var.region}.amazonaws.com"]
+        },
+        {
+          test     = "StringLike"
+          variable = "kms:EncryptionContext:PARAMETER_ARN"
+          values   = ["arn:aws:ssm:${var.region}:${data.aws_caller_identity.current.account_id}:parameter/bni/*"]
+        },
+      ]
+    }
+    # ReadOnlyAccess would also read every object and secret in the account
+    NoDataReads = {
+      effect    = "Deny"
+      actions   = ["s3:GetObject", "s3:GetObjectVersion", "secretsmanager:GetSecretValue"]
+      resources = ["*"]
+    }
   }
 }
 
