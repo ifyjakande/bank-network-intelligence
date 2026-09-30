@@ -22,13 +22,15 @@ x-clickhouse: &clickhouse
     keeper1: { condition: service_healthy }
     keeper2: { condition: service_healthy }
     keeper3: { condition: service_healthy }
+  # the stitching replica peaked at 957 MiB of a 954 MiB server cap while a projection was
+  # being built under live ingest; 1.6 GB leaves room for that, 2 GB for caches on top
   deploy:
     resources:
-      limits: { memory: 1300m }
+      limits: { memory: 2g }
 
 x-clickhouse-env: &clickhouse-env
   CLICKHOUSE_SKIP_USER_SETUP: "1"
-  CH_MAX_SERVER_MEMORY: "1000000000"
+  CH_MAX_SERVER_MEMORY: "1600000000"
   CH_CLUSTER_SECRET: ${CH_CLUSTER_SECRET:?run scripts/gen-secrets.sh}
   CH_ADMIN_PASSWORD_SHA256: ${CH_ADMIN_PASSWORD_SHA256:?}
   CH_ETL_PASSWORD_SHA256: ${CH_ETL_PASSWORD_SHA256:?}
