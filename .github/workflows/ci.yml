@@ -76,7 +76,9 @@ jobs:
     env:
       # short lateness so "no lost sessions" can be checked a couple of minutes in
       NETGEN_LATE_MAX_S: "30"
-      NETGEN_LOAD_FACTOR: "20"
+      # traffic follows a daily curve that swings 22x, so the clock is pinned (below) and the
+      # load sized for a 2-vCPU runner: about 230 sessions/s on every run, at any hour
+      NETGEN_LOAD_FACTOR: "2"
       # only the faults the tests inject, so results do not depend on the time of day
       NETGEN_FAULT_SCHEDULE: none
       INTEGRATION_SETTLE_MIN: "2"
@@ -86,6 +88,18 @@ jobs:
         with:
           enable-cache: true
           cache-dependency-glob: etl/uv.lock
+      - name: pin the simulated clock to a weekday afternoon
+        run: |
+          python3 - >> "$GITHUB_ENV" <<'EOF'
+          from datetime import datetime, timedelta, timezone
+          now = datetime.now(timezone.utc)
+          ok = [h for h in range(-96, 97) if (now + timedelta(hours=h)).weekday() < 5
+                and (now + timedelta(hours=h)).hour == 14]
+          h = min(ok, key=abs)
+          print(f"NETGEN_UTC_OFFSET_HOURS={h + (30 - now.minute) / 60:.2f}")
+          EOF
+          grep NETGEN_UTC_OFFSET_HOURS "$GITHUB_ENV"
+          echo "runner: $(nproc) vCPU, $(free -g | awk '/Mem:/ {print $2}') GB"
       - name: start the stack
         run: make up
       - name: let traffic build up
