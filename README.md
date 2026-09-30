@@ -5,9 +5,6 @@ half-flow records through Kafka into ClickHouse. A stitcher joins them into scor
 sessions. Grafana shows which branches are degraded, what caused it, since when, and
 which provider is responsible.
 
-Live demo: [netdemo.ifeakande.com](https://netdemo.ifeakande.com), read-only, no login.
-It runs on one EC2 instance and is up while the project is being reviewed.
-
 ![Estate dashboard during an injected incident: reachability 100%, 18 branches degraded](docs/media/estate.jpg)
 
 *During an injected congestion fault at a provider PoP: ping-level reachability stays at
