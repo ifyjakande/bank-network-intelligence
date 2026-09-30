@@ -198,7 +198,7 @@ rule was tested by injecting the failure and confirming it fired and cleared.
 
 ## Tests
 
-- 52 unit tests: generator, fault validation, control API, Kafka stall handling,
+- 53 unit tests: generator, fault validation, fault ids, control API, Kafka stall handling,
   migrations, stitch windows.
 - 20 integration tests against the running stack, in CI:
   - replicas agree; no duplicate or lost sessions; every session enriched
