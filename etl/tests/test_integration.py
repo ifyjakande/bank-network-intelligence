@@ -222,5 +222,8 @@ def test_injected_fault_is_localised(ch: Client) -> None:
             f=fault["fault_id"],
         )
         assert truth >= 1, "ground-truth event did not reach ClickHouse"
+        # fault ids once restarted with the generator, pairing a new start with an old end
+        backwards = scalar(ch, "SELECT count() FROM netflow.incidents WHERE ended_at < started_at")
+        assert backwards == 0, f"{backwards} incidents end before they start"
     finally:
         _delete(f"/faults/{fault['fault_id']}")
