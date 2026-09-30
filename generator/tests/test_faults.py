@@ -41,6 +41,16 @@ def test_transitions_emit_start_then_end_once(registry: FaultRegistry) -> None:
     assert registry.snapshot() == []
 
 
+def test_fault_ids_stay_unique_across_restarts(estate: Estate) -> None:
+    # each process run numbers its faults from 1; a restart must not reuse an id, or
+    # ground truth pairs one run's start with the previous run's end
+    spec = FaultSpec("degrade", "pop:MER-NTH", latency_ms=10)
+    first = FaultRegistry(estate).add(spec, T0, T0 + 100, "sched")
+    second = FaultRegistry(estate).add(spec, T0, T0 + 100, "sched")
+    assert first.fault_id != second.fault_id
+    assert first.fault_id.startswith("sched-") and first.fault_id.endswith("-00001")
+
+
 def test_close_ends_running_and_drops_future_faults(registry: FaultRegistry) -> None:
     registry.add(FaultSpec("degrade", "pop:MER-NTH"), T0, T0 + 100, "test")
     registry.add(FaultSpec("degrade", "pop:SAV-EST"), T0 + 500, T0 + 600, "test")

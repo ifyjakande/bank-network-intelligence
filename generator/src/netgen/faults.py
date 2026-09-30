@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import itertools
 import math
+import secrets
 import threading
 from dataclasses import asdict, dataclass, field
 
@@ -122,13 +123,16 @@ class FaultRegistry:
         self._faults: dict[str, Fault] = {}
         self._started: set[str] = set()
         self._ids = itertools.count(1)
+        # the counter restarts with the process; the run id keeps fault ids unique across
+        # restarts, so ground truth never pairs one run's start with another run's end
+        self._run = secrets.token_hex(4)
 
     def add(self, spec: FaultSpec, start_us: int, end_us: int, source: str) -> Fault:
         validate(self.estate, spec)
         if end_us <= start_us:
             raise ValueError("fault must have a positive duration")
         with self._lock:
-            f = Fault(f"{source}-{next(self._ids):05d}", spec, start_us, end_us, source)
+            f = Fault(f"{source}-{self._run}-{next(self._ids):05d}", spec, start_us, end_us, source)
             self._faults[f.fault_id] = f
         return f
 
