@@ -145,8 +145,9 @@ class Stitcher:
                 "max_execution_time": self.cfg.stitch_query_timeout_s,
             },
         )
-        # result_rows is the insert itself; written_rows also counts the rollup MVs' rows
-        written = int(getattr(summary, "result_rows", 0) or 0)
+        # result_rows is the insert itself; written_rows also counts the rollup MVs' rows. It is
+        # a key of the server's summary header, not an attribute of the summary object
+        written = int((getattr(summary, "summary", None) or {}).get("result_rows", 0) or 0)
         DURATION.labels(shard.shard_no).observe(time.monotonic() - started)
         SESSIONS.labels(shard.shard_no).inc(written)
         log.info(
