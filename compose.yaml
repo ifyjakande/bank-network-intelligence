@@ -289,6 +289,8 @@ services:
     restart: unless-stopped
     environment:
       GF_PLUGINS_PREINSTALL_SYNC: grafana-clickhouse-datasource@4.21.3
+      # bundled apps this stack never uses; each costs requests on every page load
+      GF_PLUGINS_DISABLE_PLUGINS: grafana-lokiexplore-app,grafana-exploretraces-app,grafana-metricsdrilldown-app,grafana-pyroscope-app,grafana-advisor-app
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?}
       GF_SECURITY_DISABLE_GRAVATAR: "true"
       # viewers need no login: the dashboards are read-only by provisioning

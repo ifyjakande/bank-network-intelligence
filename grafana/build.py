@@ -260,14 +260,18 @@ def estate() -> dict[str, Any]:
                 WHERE {last5} AND {REGION_FILTER} AND {BRANCH_PROVIDER_FILTER}
                 GROUP BY branch_id
                 HAVING sum(sessions) >= 10 AND sum(degraded) / sum(sessions) >= 0.2)
-        """, 12, 2, decimals=0, thresholds=steps((None, GOOD), (1, CRITICAL)),
+        """, 12, 2, decimals=0, thresholds=steps((None, GOOD), (3, WARNING), (10, CRITICAL)),
+             # measured live: 0-2 in quiet periods, 3-40 during incidents
              description="Branches where at least 20% of sessions are degraded (min 10)."),
         stat("Devices affected", f"""
-            SELECT uniqMerge(degraded_devices) FROM netflow.quality_1m
+            SELECT 100 * uniqMerge(degraded_devices) / uniqMerge(devices) FROM netflow.quality_1m
             WHERE {last5} AND {REGION_FILTER} AND {BRANCH_PROVIDER_FILTER}
-        """, 16, 2, decimals=0, thresholds=steps((None, GOOD), (1, WARNING), (25, CRITICAL)),
-             description="Distinct ATMs, terminals and workstations with a degraded "
-                         "session, last 5 minutes."),
+        """, 16, 2, unit="percent", decimals=1,
+             # a share, not a count: the count tracks traffic. Measured live: 0.1-1.8%
+             # in quiet periods, 2.7-19% during incidents
+             thresholds=steps((None, GOOD), (2, WARNING), (5, CRITICAL)),
+             description="Share of active ATMs, terminals and workstations with a "
+                         "degraded session, last 5 minutes."),
         stat("Card authorisation p95", f"""
             SELECT quantilesTDigestMerge(0.5, 0.95)(response_ms)[2] FROM netflow.quality_1m
             WHERE {last5} AND app = 'card_authorisation'
