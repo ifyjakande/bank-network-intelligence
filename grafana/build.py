@@ -308,7 +308,9 @@ def estate() -> dict[str, Any]:
                       'backup', 'primary') AS Circuit,
                    sum(q.sessions) AS Sessions,
                    round(100 * sum(q.degraded) / sum(q.sessions), 1) AS `Degraded %`,
-                   round(sum(q.quality_sum) / sum(q.sessions), 1) AS Quality,
+                   -- the mean hides the tail (19% degraded still averages ~90), so it is
+                   -- shown as a plain number, not a Good/Fair label; Degraded % ranks
+                   round(sum(q.quality_sum) / sum(q.sessions), 1) AS `Mean score`,
                    -- blank when nothing degraded: argMax would pick an arbitrary app
                    -- degraded sessions summed per app across all rows; blank when none
                    if(sum(q.degraded) = 0, '', topKWeighted(1)(q.app, q.degraded)[1])
@@ -332,7 +334,7 @@ def estate() -> dict[str, Any]:
         """, 0, 16, 24, 12, overrides=[
             col("Degraded %", cell=gauge_cell(), min=0, max=100, unit="percent",
                 thresholds=steps((None, GOOD), (5, WARNING), (20, CRITICAL))),
-            col("Quality", mappings=quality_mappings(), cell=text_cell()),
+            col("Mean score", decimals=1),
             col("Card p95 ms", unit="ms", cell=text_cell(),
                 thresholds=steps((None, GOOD), (300, WARNING), (900, CRITICAL))),
             col("Circuit", mappings=[{"type": "value", "options": {
