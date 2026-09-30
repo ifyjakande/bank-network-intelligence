@@ -24,13 +24,3 @@ __pycache__/
 .terraform/
 .terraform.lock.hcl.bak
 *.tfplan
-
-# video kit: voice model, generated narration, renders and review stills
-video-kit/.venv/
-video-kit/audio/
-video-kit/review/
-video-kit/narration.wav
-video-kit/*.mp4
-video-kit/*.onnx
-video-kit/*.bin
-video-kit/espeak-ng-data
