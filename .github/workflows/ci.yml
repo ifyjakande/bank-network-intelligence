@@ -27,7 +27,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [generator, etl]
+        include:
+          - package: generator
+            lint: src tests
+          - package: etl
+            lint: src tests ../bench
     defaults:
       run:
         working-directory: ${{ matrix.package }}
@@ -39,7 +43,7 @@ jobs:
           cache-dependency-glob: ${{ matrix.package }}/uv.lock
       - run: uv sync --frozen
       - name: lint
-        run: uv run ruff check src tests && uv run ruff format --check src tests
+        run: uv run ruff check ${{ matrix.lint }} && uv run ruff format --check ${{ matrix.lint }}
       - name: types
         run: uv run mypy
       - name: unit tests

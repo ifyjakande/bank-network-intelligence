@@ -24,3 +24,6 @@ __pycache__/
 .terraform/
 .terraform.lock.hcl.bak
 *.tfplan
+
+# local demo-video kit (voice model, audio, renders): never published
+video-kit/
