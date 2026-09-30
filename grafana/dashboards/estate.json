@@ -379,7 +379,11 @@
                 "color": "#0ca30c"
               },
               {
-                "value": 1,
+                "value": 3,
+                "color": "#fab219"
+              },
+              {
+                "value": 10,
                 "color": "#d03b3b"
               }
             ]
@@ -412,7 +416,7 @@
     {
       "type": "stat",
       "title": "Devices affected",
-      "description": "Distinct ATMs, terminals and workstations with a degraded session, last 5 minutes.",
+      "description": "Share of active ATMs, terminals and workstations with a degraded session, last 5 minutes.",
       "datasource": {
         "type": "grafana-clickhouse-datasource",
         "uid": "clickhouse"
@@ -431,14 +435,14 @@
             "uid": "clickhouse"
           },
           "editorType": "sql",
-          "rawSql": "SELECT uniqMerge(degraded_devices) FROM netflow.quality_1m\n            WHERE minute >= toStartOfMinute(now()) - INTERVAL 5 MINUTE AND minute < toStartOfMinute(now()) AND region IN (${region:singlequote}) AND dictGet('netflow.branch', 'primary_provider', branch_id) IN (${provider:singlequote})",
+          "rawSql": "SELECT 100 * uniqMerge(degraded_devices) / uniqMerge(devices) FROM netflow.quality_1m\n            WHERE minute >= toStartOfMinute(now()) - INTERVAL 5 MINUTE AND minute < toStartOfMinute(now()) AND region IN (${region:singlequote}) AND dictGet('netflow.branch', 'primary_provider', branch_id) IN (${provider:singlequote})",
           "format": 1,
           "queryType": "table"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "none",
+          "unit": "percent",
           "thresholds": {
             "mode": "absolute",
             "steps": [
@@ -447,11 +451,11 @@
                 "color": "#0ca30c"
               },
               {
-                "value": 1,
+                "value": 2,
                 "color": "#fab219"
               },
               {
-                "value": 25,
+                "value": 5,
                 "color": "#d03b3b"
               }
             ]
@@ -460,7 +464,7 @@
             "mode": "thresholds"
           },
           "noValue": "\u2013",
-          "decimals": 0
+          "decimals": 1
         },
         "overrides": []
       },
