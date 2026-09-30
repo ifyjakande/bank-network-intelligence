@@ -68,11 +68,11 @@ def quality_mappings() -> list[dict[str, Any]]:
                                          (0, 49.999, "Poor", CRITICAL))]
 
 
-# no custom all-value: "All" expands to the real list, so any mix of selections filters
-# correctly (a sentinel like 'All' silently turned "All + North" into no filter at all)
 # the current minute is still being stitched: every panel stops at the last complete one
 COMPLETE = "minute < toStartOfMinute(now())"
 LAST5 = f"minute >= toStartOfMinute(now()) - INTERVAL 5 MINUTE AND {COMPLETE}"
+# no custom all-value: "All" expands to the real list, so any mix of selections filters
+# correctly (a sentinel like 'All' silently turned "All + North" into no filter at all)
 REGION_FILTER = "region IN (${region:singlequote})"
 PROVIDER_FILTER = "provider IN (${provider:singlequote})"
 # branch views filter on the branch's primary provider, not the circuit its traffic is on
@@ -224,7 +224,6 @@ def dashboard(uid: str, title: str, description: str, panels: list[Panel],
 # --- dashboards ---------------------------------------------------------------------
 
 def estate() -> dict[str, Any]:
-    last5 = LAST5
     p: list[Panel] = [
         note("### Branch estate · service quality\n"
              "Measured per session from encrypted-traffic metadata (no payloads, no "
@@ -237,27 +236,27 @@ def estate() -> dict[str, Any]:
                 WHERE role = 'primary' AND {PROVIDER_FILTER}
                   AND dictGet('netflow.branch', 'region', branch_id) IN (${{region:singlequote}}))
             SELECT 100 * (SELECT uniqExact(branch_id) FROM netflow.quality_1m
-                          WHERE {last5} AND branch_id IN (SELECT branch_id FROM expected))
+                          WHERE {LAST5} AND branch_id IN (SELECT branch_id FROM expected))
                        / (SELECT count() FROM expected)
         """, 0, 2, unit="percent", decimals=1,
              thresholds=steps((None, CRITICAL), (99, GOOD)),
              description="Branches in the selection with any traffic in the last 5 minutes."),
         stat("Estate quality score", f"""
             SELECT sum(quality_sum) / sum(sessions) FROM netflow.quality_1m
-            WHERE {last5} AND {REGION_FILTER} AND {BRANCH_PROVIDER_FILTER}
+            WHERE {LAST5} AND {REGION_FILTER} AND {BRANCH_PROVIDER_FILTER}
         """, 4, 2, thresholds=steps((None, CRITICAL), (70, WARNING), (90, GOOD)),
              description="Mean 0-100 session score against each app's SLA targets, "
                          "last 5 minutes."),
         stat("Degraded sessions", f"""
             SELECT 100 * sum(degraded) / sum(sessions) FROM netflow.quality_1m
-            WHERE {last5} AND {REGION_FILTER} AND {BRANCH_PROVIDER_FILTER}
+            WHERE {LAST5} AND {REGION_FILTER} AND {BRANCH_PROVIDER_FILTER}
         """, 8, 2, unit="percent", decimals=2,
              thresholds=steps((None, GOOD), (1, WARNING), (5, CRITICAL)),
              description="Share of sessions scoring under 70, last 5 minutes."),
         stat("Branches degraded now", f"""
             SELECT count() FROM (
                 SELECT branch_id FROM netflow.quality_1m
-                WHERE {last5} AND {REGION_FILTER} AND {BRANCH_PROVIDER_FILTER}
+                WHERE {LAST5} AND {REGION_FILTER} AND {BRANCH_PROVIDER_FILTER}
                 GROUP BY branch_id
                 HAVING sum(sessions) >= 10 AND sum(degraded) / sum(sessions) >= 0.2)
         """, 12, 2, decimals=0, thresholds=steps((None, GOOD), (3, WARNING), (10, CRITICAL)),
@@ -265,7 +264,7 @@ def estate() -> dict[str, Any]:
              description="Branches where at least 20% of sessions are degraded (min 10)."),
         stat("Devices affected", f"""
             SELECT 100 * uniqMerge(degraded_devices) / uniqMerge(devices) FROM netflow.quality_1m
-            WHERE {last5} AND {REGION_FILTER} AND {BRANCH_PROVIDER_FILTER}
+            WHERE {LAST5} AND {REGION_FILTER} AND {BRANCH_PROVIDER_FILTER}
         """, 16, 2, unit="percent", decimals=1,
              # a share, not a count: the count tracks traffic. Measured live: 0.1-1.8%
              # in quiet periods, 2.7-19% during incidents
@@ -274,7 +273,7 @@ def estate() -> dict[str, Any]:
                          "degraded session, last 5 minutes."),
         stat("Card authorisation p95", f"""
             SELECT quantilesTDigestMerge(0.5, 0.95)(response_ms)[2] FROM netflow.quality_1m
-            WHERE {last5} AND app = 'card_authorisation'
+            WHERE {LAST5} AND app = 'card_authorisation'
               AND {REGION_FILTER} AND {BRANCH_PROVIDER_FILTER}
         """, 20, 2, unit="ms", decimals=0,
              thresholds=steps((None, GOOD), (300, WARNING), (900, CRITICAL)),
@@ -311,7 +310,6 @@ def estate() -> dict[str, Any]:
                    -- the mean hides the tail (19% degraded still averages ~90), so it is
                    -- shown as a plain number, not a Good/Fair label; Degraded % ranks
                    round(sum(q.quality_sum) / sum(q.sessions), 1) AS `Mean score`,
-                   -- blank when nothing degraded: argMax would pick an arbitrary app
                    -- degraded sessions summed per app across all rows; blank when none
                    if(sum(q.degraded) = 0, '', topKWeighted(1)(q.app, q.degraded)[1])
                        AS `Most affected app`,
