@@ -45,9 +45,11 @@ x-keeper: &keeper
     interval: 5s
     timeout: 3s
     retries: 30
+  # Keeper refuses requests above 90% of this, and its baseline RSS is ~225 MiB on
+  # arm64 however little it stores; at 256m it stalled every replicated insert
   deploy:
     resources:
-      limits: { memory: 256m }
+      limits: { memory: 512m }
 
 x-etl: &etl
   build:
