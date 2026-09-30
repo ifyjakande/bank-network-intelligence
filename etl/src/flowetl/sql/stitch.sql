@@ -19,17 +19,28 @@ INSERT INTO netflow.sessions_local (
 )
 WITH
     touched AS (
-        SELECT DISTINCT community_id
+        SELECT community_id, first_seen
         FROM netflow.stitch_queue_local
         WHERE /* QUEUE_SLICES */
     ),
+    -- the oldest session this window touches, less the pairing slack (a return half can
+    -- be first seen slightly before its request half on a skewed probe clock). Community
+    -- IDs are hashes spread over every granule, so the time bound is what limits the read:
+    -- the half-flows projection ordered by first_seen turns it into the last hour or so.
+    -- A queue row from before first_seen was queued (zero) falls back to the full lookback.
+    (
+        SELECT greatest(
+            {hi:DateTime64(3)} - toIntervalSecond({lookback_s:UInt32}),
+            if(countIf(first_seen = toDateTime64(0, 6, 'UTC')) > 0,
+               toDateTime64(0, 6, 'UTC'),
+               min(first_seen) - toIntervalMillisecond({pair_tolerance_ms:UInt32} + {probe_skew_ms:UInt32})))
+        FROM touched
+    ) AS since,
     records AS (
-        -- community_id leads the sort key, so this is a set of point lookups; the
-        -- first_seen bound only prunes partitions
         SELECT *
         FROM netflow.halfflows_local
         WHERE community_id IN (SELECT community_id FROM touched)
-          AND first_seen >= {hi:DateTime64(3)} - toIntervalSecond({lookback_s:UInt32})
+          AND first_seen >= since
         LIMIT 1 BY record_id  -- replays from the upstream at-least-once hop
     ),
     halves AS (
@@ -131,7 +142,7 @@ WITH
               SELECT community_id, session_start
               FROM netflow.sessions_local
               WHERE community_id IN (SELECT community_id FROM touched)
-                AND session_start >= {hi:DateTime64(3)} - toIntervalSecond({lookback_s:UInt32})
+                AND session_start >= since
           )
     ),
     scored AS (

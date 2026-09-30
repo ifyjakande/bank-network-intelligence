@@ -11,10 +11,13 @@
     <mark_cache_size>268435456</mark_cache_size>
     <uncompressed_cache_size>0</uncompressed_cache_size>
     <background_pool_size>4</background_pool_size>
-    <background_merges_mutations_concurrency_ratio>2</background_merges_mutations_concurrency_ratio>
+    <!-- 4 threads, 28 task slots: ALTERs that change a table's projections validate against
+         the built-in reserves (up to 25 free slots, not the values below) and refuse to run on
+         fewer. Slots are queue space, not threads, so memory stays bounded by the 4 threads -->
+    <background_merges_mutations_concurrency_ratio>7</background_merges_mutations_concurrency_ratio>
     <background_schedule_pool_size>32</background_schedule_pool_size>
     <max_concurrent_queries>100</max_concurrent_queries>
-    <!-- must stay below pool_size * concurrency_ratio (8 slots) or the server refuses to start -->
+    <!-- lower than the defaults, so mutations and big merges still run while merges are busy -->
     <merge_tree>
         <number_of_free_entries_in_pool_to_execute_mutation>2</number_of_free_entries_in_pool_to_execute_mutation>
         <number_of_free_entries_in_pool_to_lower_max_size_of_merge>2</number_of_free_entries_in_pool_to_lower_max_size_of_merge>

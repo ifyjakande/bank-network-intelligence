@@ -167,6 +167,13 @@ Tuning notes:
 - The stitcher only loops without waiting when it has a backlog. This cut its CPU by 5.7×.
 - The query condition cache makes repeated scans look instant. It is disabled for all
   measurements.
+- The stitcher looked up each window's sessions by `community_id`. Community IDs are
+  hashes, so ~30k touched sessions hit nearly every granule and each run read the whole
+  day: 105 thousand rows per run at start-up, 27.6 million (11 s) twelve hours later on the
+  live instance. The work queue now carries `first_seen`, and half-flows have a projection
+  ordered by it, so a run reads back only to its oldest touched session (sessions last up
+  to ~45 minutes). Locally: 19.3 million rows and 3.1 s per run down to 6.6 million and
+  0.74 s, and the cost no longer grows with the table.
 - Keeper at 256 MB sat at 225 MB resident on arm64, crossed its soft limit under load
   and refused requests. Every replicated table went read-only for 2.5 minutes. At
   512 MB the same run shows no refusals.
