@@ -5,7 +5,8 @@ half-flow records through Kafka into ClickHouse. A stitcher joins them into scor
 sessions. Grafana shows which branches are degraded, what caused it, since when, and
 which provider is responsible.
 
-Walkthrough video: added with the live deployment.
+Live demo: [netdemo.ifeakande.com](https://netdemo.ifeakande.com), read-only, no login.
+It runs on one EC2 instance and is up while the project is being reviewed.
 
 ## Why
 
@@ -143,6 +144,19 @@ Ingest at 10× load (5 minutes, live cluster):
 | Stitch time per window | 0.2 s every 10 s |
 | Active parts per partition | 4 at most |
 
+Ingest ceiling on the deployed instance (t4g.xlarge, 4 vCPU, whole stack on one box),
+load stepped up through the generator's control API:
+
+| Load | Peak ingest | Stitch lag | Replica delay |
+|---|---|---|---|
+| 100× | 1,340 rows/s | 19 to 25 s | 0 s |
+| 200× | 2,860 rows/s | 19 to 26 s | 0 s |
+| 400×, held 5 minutes | 7,900 rows/s | 20 to 35 s | 0 s |
+| Kafka backlog drain | 15,000 rows/s | | |
+
+The pipeline was not saturated at 400×, the highest step run. The backlog figure is the
+rate ClickHouse drained a Kafka backlog after a stall, so it is a burst rate.
+
 Tuning notes:
 
 - The branch-first sort key also compresses 13% better than time-first.
@@ -153,6 +167,9 @@ Tuning notes:
 - The stitcher only loops without waiting when it has a backlog. This cut its CPU by 5.7×.
 - The query condition cache makes repeated scans look instant. It is disabled for all
   measurements.
+- Keeper at 256 MB sat at 225 MB resident on arm64, crossed its soft limit under load
+  and refused requests. Every replicated table went read-only for 2.5 minutes. At
+  512 MB the same run shows no refusals.
 
 ## Dashboards and alerts
 
@@ -181,7 +198,8 @@ rule was tested by injecting the failure and confirming it fired and cleared.
 
 ## Tests
 
-- 47 unit tests: generator, fault validation, control API, migrations, stitch windows.
+- 52 unit tests: generator, fault validation, control API, Kafka stall handling,
+  migrations, stitch windows.
 - 20 integration tests against the running stack, in CI:
   - replicas agree; no duplicate or lost sessions; every session enriched
   - an injected fault is localised to the right element
@@ -194,13 +212,41 @@ rule was tested by injecting the failure and confirming it fired and cleared.
 - ClickHouse: default user disabled; separate `admin`, `etl` and read-only `grafana`
   users with hashed passwords. `grafana` has no `REMOTE`, no `query_log`, and limits on
   query time, memory and concurrency.
-- Secrets live in `.env.stack` (gitignored). CI runs gitleaks; GitHub push protection is on.
-- Local ports bind to `127.0.0.1`. The public deployment will use a tunnel with no open
-  inbound ports.
+- Secrets live in `.env.stack` (gitignored). CI runs gitleaks on the full history.
+- Local ports bind to `127.0.0.1`. The deployed instance has no inbound ports; Grafana is
+  published through a Cloudflare Tunnel and shell access is through SSM.
+- No long-lived cloud keys: Terraform Cloud and GitHub Actions get short-lived AWS
+  credentials through OIDC.
 - CI actions are pinned to commit SHAs; images are scanned before publishing.
+
+## Deployment
+
+Terraform in `infra/`, run by Terraform Cloud, built from terraform-aws-modules plus the
+official Cloudflare provider for the tunnel.
+
+- `infra/bootstrap`: OIDC trust for Terraform Cloud and GitHub Actions, applied once.
+- `infra/live`: VPC with one public subnet and no NAT gateway, a security group with no
+  inbound rules and outbound 443 and 7844 only, a t4g.xlarge with an encrypted gp3 disk
+  and IMDSv2, the Cloudflare Tunnel and DNS record, a read-only deploy key for the repo,
+  and a $30 monthly budget alert.
+- First boot installs Docker and cloudflared from signed package repos and pinned,
+  checksum-verified Compose and Buildx, clones the repo and runs `make up`. The tunnel token and deploy key come from SSM Parameter Store, not user data.
+
+A merge to `main` runs CI, then the deploy workflow moves the instance to the new commit
+over SSM. `terraform destroy` on the `bni-demo` workspace removes everything, including the
+DNS record and the deploy key.
+
+Checked on the live instance: every dashboard query and alert rule through the public
+URL, each scheduled incident firing and clearing its alert, a deploy from `main`, and a
+stop and start of the instance (site back in about a minute, no manual steps).
 
 ## Limitations
 
+- Everything runs on one instance: the 2 × 2 cluster is real in configuration, but the
+  replicas share one machine, so they add no capacity or fault tolerance. In production
+  each server runs on its own machine, spread across availability zones. The schema and
+  code stay the same; `clickhouse/config.d/cluster.xml` already addresses servers by
+  hostname.
 - Kafka runs as one broker. Production would use three with replication factor 3.
 - Traffic is synthetic. It models RTT, loss, retransmission timeouts, asymmetric routing,
   port reuse, and late and duplicate delivery.
@@ -220,5 +266,6 @@ clickhouse/  cluster config, users, migrations, localisation query
 postgres/    inventory schema and views
 grafana/     dashboards and alerts as code
 bench/       benchmark harness and results
-scripts/     secret generation
+infra/       terraform: bootstrap (OIDC trust) and live (the demo instance)
+scripts/     secret generation, deploy
 ```

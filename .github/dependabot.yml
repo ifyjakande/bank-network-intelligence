@@ -14,6 +14,10 @@ updates:
   - package-ecosystem: docker
     directories: [/generator, /etl]
     schedule: { interval: weekly }
+    # the code targets 3.12 (.python-version, ruff); a new minor is a deliberate move
+    ignore:
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: docker-compose
     directory: /
     schedule: { interval: weekly }
