@@ -283,7 +283,7 @@ services:
         limits: { memory: 5g }
 
   grafana:
-    image: grafana/grafana:13.2.3
+    image: grafana/grafana:13.2.4
     restart: unless-stopped
     environment:
       GF_PLUGINS_PREINSTALL_SYNC: grafana-clickhouse-datasource@4.21.3
