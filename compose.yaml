@@ -35,7 +35,7 @@ x-clickhouse-env: &clickhouse-env
   PG_CH_READER_PASSWORD: ${PG_CH_READER_PASSWORD:?}
 
 x-keeper: &keeper
-  image: clickhouse/clickhouse-keeper:26.8
+  image: clickhouse/clickhouse-keeper:26.10
   restart: unless-stopped
   healthcheck:
     test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/9181; printf ruok >&3; read -t 2 r <&3; [ \"$$r\" = imok ]'"]
