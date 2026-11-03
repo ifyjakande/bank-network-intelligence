@@ -6,7 +6,7 @@
 name: ${COMPOSE_PROJECT_NAME:-bni}
 
 x-clickhouse: &clickhouse
-  image: clickhouse/clickhouse-server:26.8
+  image: clickhouse/clickhouse-server:26.10
   restart: unless-stopped
   ulimits:
     nofile: { soft: 262144, hard: 262144 }
@@ -261,7 +261,7 @@ services:
   # benchmarks only (`make bench`): a single server with room to work, kept apart from the
   # live cluster so neither skews the other
   ch-bench:
-    image: clickhouse/clickhouse-server:26.8
+    image: clickhouse/clickhouse-server:26.10
     profiles: ["bench"]
     environment:
       CLICKHOUSE_USER: bench
