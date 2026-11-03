@@ -4,10 +4,10 @@ version = "0.1.0"
 description = "synthetic half-flow metadata for a bank branch WAN (no payloads)"
 requires-python = ">=3.12"
 dependencies = [
-    "confluent-kafka>=2.15.1",
-    "orjson>=3.12.0",
+    "confluent-kafka>=2.16.1",
+    "orjson>=3.13.0",
     "prometheus-client>=0.26.0",
-    "pydantic-settings>=2.15.0",
+    "pydantic-settings>=2.16.2",
 ]
 
 [project.scripts]
@@ -44,7 +44,7 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
-    "mypy>=2.3.1",
-    "pytest>=9.1.1",
-    "ruff>=0.16.9",
+    "mypy>=2.4.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
 ]
